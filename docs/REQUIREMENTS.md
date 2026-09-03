@@ -142,7 +142,8 @@ policy.
   sources.
 - **FR-4.5 Decline is not terminal.** A `not_promoted` decision may later be
   re-recommended and promoted; the earlier decline remains visible in its transition
-  log. Only `superseded` and `discarded` are terminal.
+  log. Terminal short-term statuses are `promoted`, `superseded`, and `discarded`;
+  `archived` and `not_promoted` are always revivable.
 
 ### FR-5 Relationships between decisions
 - **FR-5.1** Relationship kinds: `SUPERSEDES`, `SUPPLEMENTS`, plus the internal
