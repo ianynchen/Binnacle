@@ -61,7 +61,7 @@ await bn.supersede(new_id, old_id, actor)                        # I-2 gate appl
 await bn.supplement(new_id, old_id, actor)                       # same gate
 await bn.reactivate(decision_id, actor)                          # un-archive (FR-3.4)
 await bn.apply_item(item_id, actor)                              # execute a suggested link/supersede
-                                                                 #   item (human if LT target)
+                                                                 #   item (human always)
 await bn.dismiss_item(item_id, actor, reason)                    # negative resolution, any item kind
 
 # Queries (FR-6):
