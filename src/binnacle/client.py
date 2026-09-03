@@ -22,14 +22,20 @@ from typing import Literal
 from uuid import UUID
 
 from binnacle.adapters.postgres_store import PostgresStore
+from binnacle.application.archival import archive_stale as _archive_stale
 from binnacle.application.config import BinnacleConfig
+from binnacle.application.discovery import backfill_embeddings as _backfill_embeddings
+from binnacle.application.discovery import discover as _discover
 from binnacle.application.lifecycle import LifecycleEngine
 from binnacle.application.query import precedent as _precedent
 from binnacle.domain.errors import AuthorityViolation, UnknownDomain
 from binnacle.domain.models import (
     Actor,
+    ArchivalSummary,
+    BackfillSummary,
     CompactDecision,
     Decision,
+    DiscoverySummary,
     DomainRecord,
     ExportBundle,
     HistoryRecord,
@@ -284,6 +290,37 @@ class Binnacle:
             if record.name == name:
                 return record
         raise UnknownDomain(name)
+
+    # -- sweeps (host-scheduled; FR-6.9/7/3.4) -------------------------------
+
+    async def backfill_embeddings(self, batch: int = 100) -> BackfillSummary:
+        """Embed up to `batch` decisions from the unembedded backlog. See
+        `application.discovery.backfill_embeddings`."""
+        return await _backfill_embeddings(
+            self._store, self._config.embedder, self._config.embedding_dim, batch=batch
+        )
+
+    async def discover(self, batch: int = 100) -> DiscoverySummary:
+        """Run the discovery sweep (FR-7.4 relationship discovery +
+        FR-7.2 promotion-candidate assessment) over up to `batch` newly
+        embedded decisions. No-ops cleanly when `config.suggester` is unset.
+        See `application.discovery.discover`."""
+        return await _discover(
+            self._store,
+            self._config.embedder,
+            self._config.suggester,
+            self._engine,
+            k=self._config.discovery.k,
+            confidence_floor=self._config.discovery.confidence_floor,
+            per_sweep_cap=self._config.discovery.per_sweep_cap,
+            archival_age_days=self._config.archival_age_days,
+            batch=batch,
+        )
+
+    async def archive_stale(self) -> ArchivalSummary:
+        """Auto-archive every clock-eligible short-term decision (FR-3.4).
+        See `application.archival.archive_stale`."""
+        return await _archive_stale(self._store, self._engine, self._config.archival_age_days)
 
 
 def _require_human(actor: Actor, verb: str) -> None:

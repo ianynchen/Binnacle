@@ -339,6 +339,45 @@ class QueueItemView:
 
 
 @dataclass(frozen=True)
+class BackfillSummary:
+    """`backfill_embeddings()` sweep result (docs/components/04-query-and-assist.md
+    "The sweeps"): how many decisions from the unembedded backlog were embedded
+    and upserted this call. Zero when the backlog is empty -- the sweep no-ops
+    cleanly rather than erroring.
+    """
+
+    embedded: int
+
+
+@dataclass(frozen=True)
+class DiscoverySummary:
+    """`discover()` sweep result (docs/components/04-query-and-assist.md "The
+    sweeps"; FR-7.4): counts from both halves of the sweep -- relationship
+    discovery over newly embedded decisions (`decisions_processed`,
+    `suggestions_enqueued`, `suggestions_deduped`, `suggestions_below_floor`),
+    and promotion assessment over aging unrecommended decisions
+    (`promotions_recommended`). All zero when no `Suggester` is configured
+    (the sweep no-ops cleanly) or when both cursors are empty.
+    """
+
+    decisions_processed: int
+    suggestions_enqueued: int
+    suggestions_deduped: int
+    suggestions_below_floor: int
+    promotions_recommended: int
+
+
+@dataclass(frozen=True)
+class ArchivalSummary:
+    """`archive_stale()` sweep result (FR-3.4): how many short-term decisions
+    crossed the auto-archival clock and were archived this call. Zero when
+    nothing is clock-eligible.
+    """
+
+    archived: int
+
+
+@dataclass(frozen=True)
 class ExportBundle:
     """A filtered export (FR-6.6): decisions (each carrying its own refs), every
     link and transition touching them, and the full domains registry. Embeddings
