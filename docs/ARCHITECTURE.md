@@ -208,6 +208,11 @@ supplement networks) — the same pattern as tradewind's session tree. When a
 decision is superseded or discarded, its open queue items auto-resolve as
 `voided` in the same transaction (FR-4.3); open items block archival (FR-3.4).
 
+Note: the CREATE TABLE order above is this section's narrative order; the
+actual migration (`migrations/0001_schema.sql`) creates `domains` before
+`decisions` and otherwise reorders tables — FK-forced (a table must exist
+before anything that `REFERENCES` it), not a drift from this spec.
+
 ### 4.1 Schema ownership and migrations
 
 All tables live in binnacle's **own PostgreSQL schema** (default `binnacle`,
@@ -327,8 +332,11 @@ src/binnacle/
 
 ## 7. Pending Decisions
 
-- **P-1** Driver confirmation (psycopg3-async vs asyncpg) — settle at plan time
-  with a spike if pgvector adaptation proves awkward.
+- **P-1** ~~Driver confirmation (psycopg3-async vs asyncpg)~~ **Resolved:**
+  **psycopg3 (async)** — no spike needed, pgvector adaptation via the
+  `pgvector` package's psycopg support was straightforward. Chosen exact pins
+  (recorded per Task 10, verified against `pyproject.toml`):
+  `psycopg[binary,pool]==3.3.5`, `pgvector==0.5.0`, `yoyo-migrations==9.0.0`.
 - **P-2** ~~Embedding model~~ **Resolved:** `nomic-embed-text-v1.5`, 768-dim,
   8192-token context (OQ-3) — fulfilled by the embedder-side `Embedder` adapter;
   binnacle's schema fixes `VECTOR(768)` at migration; the embedded text is

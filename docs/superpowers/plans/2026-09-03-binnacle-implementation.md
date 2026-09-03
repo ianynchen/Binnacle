@@ -48,7 +48,7 @@ scripts/check.sh
 **Interfaces:**
 - Produces: importable `binnacle`; green `scripts/check.sh`; installed pre-commit hook; CI workflow; the `pg_dsn` / `scratch_schema` pytest fixtures every DB task uses.
 
-- [ ] **Step 1: pyproject** — hatchling; runtime deps `pydantic>=2.9`, `psycopg[binary,pool]==<current exact>`, `pgvector==<current exact>`, `yoyo-migrations==<current exact>`; dev: pytest, pytest-asyncio (`asyncio_mode="auto"`), mypy, ruff, import-linter, pre-commit. Import-linter:
+- [x] **Step 1: pyproject** — hatchling; runtime deps `pydantic>=2.9`, `psycopg[binary,pool]==<current exact>`, `pgvector==<current exact>`, `yoyo-migrations==<current exact>`; dev: pytest, pytest-asyncio (`asyncio_mode="auto"`), mypy, ruff, import-linter, pre-commit. Import-linter:
 ```toml
 [tool.importlinter]
 root_package = "binnacle"
@@ -67,7 +67,7 @@ type = "forbidden"
 source_modules = ["binnacle.application"]
 forbidden_modules = ["psycopg", "yoyo"]
 ```
-- [ ] **Step 2: `.pre-commit-config.yaml`** (owner requirement — gitleaks + ruff lint + ruff format):
+- [x] **Step 2: `.pre-commit-config.yaml`** (owner requirement — gitleaks + ruff lint + ruff format):
 ```yaml
 repos:
   - repo: https://github.com/gitleaks/gitleaks
@@ -81,8 +81,8 @@ repos:
       - id: ruff-format
 ```
 Run `pre-commit install` and `pre-commit run --all-files`.
-- [ ] **Step 3: `scripts/check.sh`** — `set -euo pipefail`; `uv run ruff format --check src tests`, `uv run ruff check src tests`, `uv run mypy src`, `uv run lint-imports`, `uv run pytest -q` (mirrors the hooks per Global Constraints).
-- [ ] **Step 4: `tests/conftest.py`** — the DB fixture contract:
+- [x] **Step 3: `scripts/check.sh`** — `set -euo pipefail`; `uv run ruff format --check src tests`, `uv run ruff check src tests`, `uv run mypy src`, `uv run lint-imports`, `uv run pytest -q` (mirrors the hooks per Global Constraints).
+- [x] **Step 4: `tests/conftest.py`** — the DB fixture contract:
 ```python
 import os, uuid, pytest, psycopg
 
@@ -107,9 +107,9 @@ def scratch_schema(pg_dsn: str) -> str:  # yields a unique schema name; drops it
         c.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
 ```
 (Precondition on the mini: `createdb binnacle_test` and `CREATE EXTENSION vector` in it — do this in this task and record it.)
-- [ ] **Step 5: `.github/workflows/ci.yml`** — on push/PR to main: checkout; `astral-sh/setup-uv`; services: `postgres: image: pgvector/pgvector:pg18` (fall back to `:pg17` if the tag doesn't exist — verify with `docker manifest inspect` or the registry page and record) with `POSTGRES_DB: binnacle_test`, health-check; env `BINNACLE_TEST_DSN: postgresql://postgres:postgres@localhost:5432/binnacle_test`; run `uv sync` then `bash scripts/check.sh`. Also a `pre-commit run --all-files` step (`pre-commit/action` or uv-run).
-- [ ] **Step 6: `tests/architecture/test_layering.py`** — subprocess `uv run lint-imports`, assert rc 0 (portable cwd via `Path(__file__).parents[2]`).
-- [ ] **Step 7: run check.sh + pre-commit → both green; commit** `chore: scaffold binnacle with guardrails (pre-commit, CI, import-linter)`
+- [x] **Step 5: `.github/workflows/ci.yml`** — on push/PR to main: checkout; `astral-sh/setup-uv`; services: `postgres: image: pgvector/pgvector:pg18` (fall back to `:pg17` if the tag doesn't exist — verify with `docker manifest inspect` or the registry page and record) with `POSTGRES_DB: binnacle_test`, health-check; env `BINNACLE_TEST_DSN: postgresql://postgres:postgres@localhost:5432/binnacle_test`; run `uv sync` then `bash scripts/check.sh`. Also a `pre-commit run --all-files` step (`pre-commit/action` or uv-run).
+- [x] **Step 6: `tests/architecture/test_layering.py`** — subprocess `uv run lint-imports`, assert rc 0 (portable cwd via `Path(__file__).parents[2]`).
+- [x] **Step 7: run check.sh + pre-commit → both green; commit** `chore: scaffold binnacle with guardrails (pre-commit, CI, import-linter)`
 
 ### Task 2: Domain — models and errors
 
@@ -245,8 +245,8 @@ class Suggestion: ...  # kind: Literal["supersedes","supplements","unrelated"], 
 class PromotionAssessment: ...  # decision_id, recommend: bool, rationale, confidence
 ```
 
-- [ ] **Step 1: failing tests** — Actor round-trip `"agent:meridian/s1"`; NewDecision confidence bounds (1.5 → ValidationError); `content_hash()` stable under metadata/refs-order changes but differs on outcome change; OptionConsidered required fields.
-- [ ] **Step 2–5: RED → implement → GREEN + check.sh + pre-commit → commit** `feat(domain): models and errors`
+- [x] **Step 1: failing tests** — Actor round-trip `"agent:meridian/s1"`; NewDecision confidence bounds (1.5 → ValidationError); `content_hash()` stable under metadata/refs-order changes but differs on outcome change; OptionConsidered required fields.
+- [x] **Step 2–5: RED → implement → GREEN + check.sh + pre-commit → commit** `feat(domain): models and errors`
 
 ### Task 3: Migrations + store foundation (write side)
 
@@ -278,9 +278,9 @@ class PostgresStore:                              # constructed with dsn|pool + 
 ```
 - Schema is ARCHITECTURE §4 VERBATIM (decisions, links, refs, transitions w/ `new_status`, queue, domains, domain_transitions, embeddings w/ `discovered_at`, all indexes incl. `idx_queue_dedup` and HNSW). All object names schema-qualified via `schema_name`.
 
-- [ ] **Step 1: failing migration tests** — migrate on scratch schema creates all tables + `VECTOR(768)` typmod check passes with dim 768 and raises `EmbeddingDimensionMismatch` with dim 384; apply→rollback-last→re-apply cycle; two schemas coexist in one DB.
-- [ ] **Step 2: failing write tests** — idempotent insert (identical→'exists_identical'; divergent hash→IdempotencyConflict); apply_transition writes transition row WITH new_status and updates decisions.status in the same tx; enqueue dedup (same kind/decision/target twice → second returns None); resolve_item double-tap → ItemAlreadyResolved; lock_decisions ordering by sorted UUID.
-- [ ] **Step 3–5: implement (yoyo: `read_migrations` from package dir, `get_backend` with search_path/schema handling documented) → GREEN → check.sh+pre-commit → commit** `feat(store): schema migrations and write primitives`
+- [x] **Step 1: failing migration tests** — migrate on scratch schema creates all tables + `VECTOR(768)` typmod check passes with dim 768 and raises `EmbeddingDimensionMismatch` with dim 384; apply→rollback-last→re-apply cycle; two schemas coexist in one DB.
+- [x] **Step 2: failing write tests** — idempotent insert (identical→'exists_identical'; divergent hash→IdempotencyConflict); apply_transition writes transition row WITH new_status and updates decisions.status in the same tx; enqueue dedup (same kind/decision/target twice → second returns None); resolve_item double-tap → ItemAlreadyResolved; lock_decisions ordering by sorted UUID.
+- [x] **Step 3–5: implement (yoyo: `read_migrations` from package dir, `get_backend` with search_path/schema handling documented) → GREEN → check.sh+pre-commit → commit** `feat(store): schema migrations and write primitives`
 
 ### Task 4: Store reads
 
@@ -310,8 +310,8 @@ async def archival_eligible(self, cutoff) -> list[UUID]  # per FR-3.4 incl. open
 async def export_rows(self, *, domains, tier, status) -> ExportBundle  # + domains registry rows
 ```
 
-- [ ] **Step 1: failing tests** — seed the §7 narrative fixture (backoff decision, supersession, general-vs-scoped subjects) and assert: relevance scoped/unscoped/status/as_of/expired-default grid; history chains; changes window+actor; shakiest fallback ordering; knn with hand-inserted vectors returns score order and excludes archived; archival_eligible excludes decisions with open items; export bundle includes domains, excludes embeddings.
-- [ ] **Step 2–4: implement → GREEN → check.sh+pre-commit → commit** `feat(store): reads, projections, candidate enumerations`
+- [x] **Step 1: failing tests** — seed the §7 narrative fixture (backoff decision, supersession, general-vs-scoped subjects) and assert: relevance scoped/unscoped/status/as_of/expired-default grid; history chains; changes window+actor; shakiest fallback ordering; knn with hand-inserted vectors returns score order and excludes archived; archival_eligible excludes decisions with open items; export bundle includes domains, excludes embeddings.
+- [x] **Step 2–4: implement → GREEN → check.sh+pre-commit → commit** `feat(store): reads, projections, candidate enumerations`
 
 ### Task 5: Lifecycle Engine
 
@@ -341,10 +341,10 @@ class LifecycleEngine:
 ```
 - Enforcement per 03: authority pre-check (`AuthorityViolation`), status legality per the FULL exit matrix (03 tables), locks first (`lock_decisions` sorted), fold via `apply_transition(new_status=…)`.
 
-- [ ] **Step 1: the exhaustive matrix test** — a table-driven test enumerating (act × actor kind × from-status) with expected outcome (`ok` | `AuthorityViolation` | `InvalidTransition`) exactly mirroring 03's tables; RED first.
-- [ ] **Step 2: property test** — random legal walk generator (≥200 acts across ≥30 decisions incl. promotions/refinements/supersedes/archivals), then for every decision `status == last non-null new_status in its transitions` and content columns unchanged.
-- [ ] **Step 3: targeted tests** — refined multi-source consolidation (N links, N promoted, refined:true); pending-LT-claim executes at gate with from=LT copy; cross-tier supersede refused (FR-5.2a); cycle refused; race test (two tasks: promote vs supersede same decision → one `InvalidTransition`, fold holds); recommend-on-archived reactivates.
-- [ ] **Step 4–5: implement → ALL GREEN → check.sh+pre-commit → commit** `feat(lifecycle): the invariant-bearing engine`
+- [x] **Step 1: the exhaustive matrix test** — a table-driven test enumerating (act × actor kind × from-status) with expected outcome (`ok` | `AuthorityViolation` | `InvalidTransition`) exactly mirroring 03's tables; RED first.
+- [x] **Step 2: property test** — random legal walk generator (≥200 acts across ≥30 decisions incl. promotions/refinements/supersedes/archivals), then for every decision `status == last non-null new_status in its transitions` and content columns unchanged.
+- [x] **Step 3: targeted tests** — refined multi-source consolidation (N links, N promoted, refined:true); pending-LT-claim executes at gate with from=LT copy; cross-tier supersede refused (FR-5.2a); cycle refused; race test (two tasks: promote vs supersede same decision → one `InvalidTransition`, fold holds); recommend-on-archived reactivates.
+- [x] **Step 4–5: implement → ALL GREEN → check.sh+pre-commit → commit** `feat(lifecycle): the invariant-bearing engine`
 
 ### Task 6: Config + client
 
@@ -355,9 +355,9 @@ class LifecycleEngine:
 **Interfaces:** per component spec 01 VERBATIM (`BinnacleConfig` incl. `compact_outcome_chars: int = 200`; `Binnacle` verbs incl. `apply_item`, `dismiss_item`, `update_domain`; typed error surface). `Binnacle.__init__` builds the store lazily (no I/O), `migrate()` delegates; every verb passes the attested Actor through; registry verbs human-only.
 - Ports live in `application/ports.py`: `Suggester` / `Embedder` Protocols per ARCHITECTURE §3.1, plus `StubEmbedder` (deterministic hash-based vectors of configured dim) and `ScriptedSuggester` in `tests/` helpers (not shipped).
 
-- [ ] **Step 1: failing config tests** — dsn-xor-pool; embedder required; two instances/two schemas coexist; compact_outcome_chars default 200.
-- [ ] **Step 2: failing client tests** — end-to-end through the public API only (spec 01 acceptance): record (agent) → recommend → promote_refined (human, generalized subjects + amended outcome) → relevant/compact → history shows PROMOTED_FROM + refined payload → export. Plus: promote by non-human raises AuthorityViolation at the client boundary; unknown domain raises UnknownDomain.
-- [ ] **Step 3–5: implement → GREEN → check.sh+pre-commit → commit** `feat(client): config and public API`
+- [x] **Step 1: failing config tests** — dsn-xor-pool; embedder required; two instances/two schemas coexist; compact_outcome_chars default 200.
+- [x] **Step 2: failing client tests** — end-to-end through the public API only (spec 01 acceptance): record (agent) → recommend → promote_refined (human, generalized subjects + amended outcome) → relevant/compact → history shows PROMOTED_FROM + refined payload → export. Plus: promote by non-human raises AuthorityViolation at the client boundary; unknown domain raises UnknownDomain.
+- [x] **Step 3–5: implement → GREEN → check.sh+pre-commit → commit** `feat(client): config and public API`
 
 ### Task 7: Query service + precedent
 
@@ -368,8 +368,8 @@ class LifecycleEngine:
 
 **Interfaces:** thin composition per 04 — `precedent(question, domains, tiers, limit, include_dead)` = `embedder.embed([question])` → `store.knn` → attribute filters → hydrate `PrecedentHit(decision: CompactDecision, similarity: float)` list, superseded/not_promoted included+labeled by status field.
 
-- [ ] **Step 1: failing tests** — with StubEmbedder’s deterministic vectors, seed decisions with hand-chosen embedding proximity; assert score order, dead-history inclusion, domain filtering, and that `precedent` never returns archived/discarded.
-- [ ] **Step 2–4: implement → GREEN → check.sh+pre-commit → commit** `feat(query): relevance, history, precedent`
+- [x] **Step 1: failing tests** — with StubEmbedder’s deterministic vectors, seed decisions with hand-chosen embedding proximity; assert score order, dead-history inclusion, domain filtering, and that `precedent` never returns archived/discarded.
+- [x] **Step 2–4: implement → GREEN → check.sh+pre-commit → commit** `feat(query): relevance, history, precedent`
 
 ### Task 8: Sweeps — backfill, discovery, archival
 
@@ -380,8 +380,8 @@ class LifecycleEngine:
 
 **Interfaces:** per 04 verbatim — backfill validates vector length (EmbeddingDimensionMismatch aborts; batch-atomic otherwise); discover is cursor-driven over `undiscovered()`, structural filters (same domain, subject overlap, temporal order, status compat), taxonomy supersedes/supplements/unrelated, floor+cap, enqueue-dedup tolerated (None returns counted as skipped), `assess_promotion` over `aging_unrecommended`; archive_stale = `archival_eligible(cutoff)` → `lifecycle.archive(ids, Actor("engine","binnacle"))`.
 
-- [ ] **Step 1: failing tests** — backfill: drains backlog with StubEmbedder, second run no-ops, wrong-dim embedder aborts with typed error and backlog intact; discover: Suggester call count ≤ N·k asserted (the FR-7.4 mechanical bound), cursor resume after simulated death (kill between classify and mark), dedup on rerun, cap leaves `discovered_at` NULL for overflow, no-suggester no-op; archival: only clock-eligible, open-item block respected, engine actor recorded.
-- [ ] **Step 2–4: implement → GREEN → check.sh+pre-commit → commit** `feat(sweeps): backfill, discovery, archival`
+- [x] **Step 1: failing tests** — backfill: drains backlog with StubEmbedder, second run no-ops, wrong-dim embedder aborts with typed error and backlog intact; discover: Suggester call count ≤ N·k asserted (the FR-7.4 mechanical bound), cursor resume after simulated death (kill between classify and mark), dedup on rerun, cap leaves `discovered_at` NULL for overflow, no-suggester no-op; archival: only clock-eligible, open-item block respected, engine actor recorded.
+- [x] **Step 2–4: implement → GREEN → check.sh+pre-commit → commit** `feat(sweeps): backfill, discovery, archival`
 
 ### Task 9: Export + narrative E2E + perf
 
@@ -391,10 +391,10 @@ class LifecycleEngine:
 
 **Interfaces:** `export(filter) -> dict` JSON-safe bundle: decisions (+refs, +links, +transitions), domains registry, `schema_version`, no embeddings (FR-6.6).
 
-- [ ] **Step 1: export tests** — content per FR-6.6; JSON-serializable; spot re-hydration equality.
-- [ ] **Step 2: narrative E2E** — encode REQUIREMENTS §7 as one test: agent records backoff decision → same-session supersede → recommendation → human refined-promote (jitter + all-remote-calls) → supplement later → supersede by human → archival of stale ST noise → every §7 claim asserted (statuses, links, transitions, queue states).
-- [ ] **Step 3: perf seed test** (`@pytest.mark.perf`) — seed 10k decisions/100k transitions via bulk COPY/executemany; assert NFR-7 targets with a 4× CI multiplier; record measured numbers in the report.
-- [ ] **Step 4–5: GREEN → check.sh+pre-commit → commit** `feat(export): JSON export; narrative and perf suites`
+- [x] **Step 1: export tests** — content per FR-6.6; JSON-serializable; spot re-hydration equality.
+- [x] **Step 2: narrative E2E** — encode REQUIREMENTS §7 as one test: agent records backoff decision → same-session supersede → recommendation → human refined-promote (jitter + all-remote-calls) → supplement later → supersede by human → archival of stale ST noise → every §7 claim asserted (statuses, links, transitions, queue states).
+- [x] **Step 3: perf seed test** (`@pytest.mark.perf`) — seed 10k decisions/100k transitions via bulk COPY/executemany; assert NFR-7 targets with a 4× CI multiplier; record measured numbers in the report.
+- [x] **Step 4–5: GREEN → check.sh+pre-commit → commit** `feat(export): JSON export; narrative and perf suites`
 
 ### Task 10: Close-out — docs, README, CI green, push
 
@@ -402,9 +402,9 @@ class LifecycleEngine:
 - Create: `README.md`
 - Modify: `docs/ARCHITECTURE.md` (P-1 driver confirmed), plan checkboxes
 
-- [ ] **Step 1:** Full `scripts/check.sh` + `pre-commit run --all-files` + perf marker run locally; fix nothing silently — report.
-- [ ] **Step 2:** README: install, provisioning preconditions (createdb + CREATE EXTENSION vector), 25-line embedding example (config → migrate → record → recommend → promote → precedent), the guardrail stack (pre-commit/CI), test env var, actor attestation note, limitations (v2 list pointer).
-- [ ] **Step 3:** Update ARCHITECTURE P-1 (driver: psycopg3 confirmed + chosen pins); tick plan checkboxes.
+- [x] **Step 1:** Full `scripts/check.sh` + `pre-commit run --all-files` + perf marker run locally; fix nothing silently — report.
+- [x] **Step 2:** README: install, provisioning preconditions (createdb + CREATE EXTENSION vector), 25-line embedding example (config → migrate → record → recommend → promote → precedent), the guardrail stack (pre-commit/CI), test env var, actor attestation note, limitations (v2 list pointer).
+- [x] **Step 3:** Update ARCHITECTURE P-1 (driver: psycopg3 confirmed + chosen pins); tick plan checkboxes.
 - [ ] **Step 4:** Commit `docs: close out phase 1`; **push `origin main`** (owner-authorized); verify CI runs green on GitHub (watch the run via `gh run watch` or report the URL + first status).
 
 ## Self-Review (performed)
