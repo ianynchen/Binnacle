@@ -185,17 +185,30 @@ policy.
 - **FR-5.4 Conflict resolution.** A `conflicts` classification (FR-7.2) files a
   pending-conflict queue item naming the two (both-`current`) decisions in
   tension. Resolution is human-only (`resolve_conflict`) and exactly one of:
-  a declared winner — executes the item's own `supersede` over the other side,
-  under every existing supersede rule (tier gate, acyclicity, auto-void of the
-  loser's open items); a new, human-authored decision that supersedes BOTH
-  sides — forced long-term when either side is (FR-5.2a: a long-term decision
-  is superseded only by a long-term successor), and refused by the same tier
-  gate when the two sides straddle tiers, exactly as a direct cross-tier
-  `supersede()` would be; or acceptance of the conflict as a standing
-  `CONFLICTS_WITH` relationship (no status change on either side, a reason
-  required) — the FR-5.3 "meaning is resolved by the reader" stance applied to
-  conflicts that are real but not (yet) adjudicated. `apply_item` never
-  executes a conflict item.
+  - **a declared winner** — when both sides share a tier, executes the item's
+    own `supersede` over the other side, under every existing supersede rule
+    (tier gate, acyclicity, auto-void of the loser's open items). Mixed tiers
+    are handled explicitly rather than refused: a **long-term winner over a
+    short-term loser** DISCARDS the loser instead of superseding it (no
+    SUPERSEDES link is possible cross-tier, FR-5.2a — but human authority
+    already suffices to discard any short-term decision, FR-3.3, so the loser
+    simply loses; its open items auto-void the same way a discard's always
+    do); a **short-term winner over a long-term loser** is refused —
+    `InvalidResolution` pointing at `promote_refined`, the only door a
+    short-term decision has into long-term change.
+  - **a refined, consolidating decision** — a new, human-authored decision
+    that supersedes BOTH sides, legal only when the two sides share a tier
+    (recorded long-term, mirroring `record_long_term`, when that shared tier
+    is long-term). A mixed-tier pair is refused the same way as the winner
+    path above — `InvalidResolution` pointing at `promote_refined` — since
+    there is no mechanism for one decision to consolidate across tiers other
+    than promotion.
+  - **acceptance** as a standing `CONFLICTS_WITH` relationship (no status
+    change on either side, a reason required) — the FR-5.3 "meaning is
+    resolved by the reader" stance applied to conflicts that are real but not
+    (yet) adjudicated.
+
+  `apply_item` never executes a conflict item.
 
 ### FR-6 Queries
 

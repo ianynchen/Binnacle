@@ -64,8 +64,15 @@ await bn.apply_item(item_id, actor)                              # execute a sug
                                                                  #   item (human always); refuses
                                                                  #   `conflict` items
 await bn.resolve_conflict(item_id, actor=human,                  # exactly one of winner_id / refined /
-                          winner_id=None, refined=None,          #   neither+reason; human always
-                          reason=None)
+                          winner_id=None, refined=None,          #   neither+reason; human always.
+                          reason=None)                           #   Same-tier winner_id/refined
+                                                                 #   supersede as usual; a long-term
+                                                                 #   winner over a short-term loser
+                                                                 #   DISCARDS the loser instead
+                                                                 #   (FR-5.4); a short-term winner
+                                                                 #   over long-term, or mixed-tier
+                                                                 #   refined, raise InvalidResolution
+                                                                 #   pointing at promote_refined.
 await bn.dismiss_item(item_id, actor, reason)                    # negative resolution, any item kind
                                                                  #   (including `conflict`)
 

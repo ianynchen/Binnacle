@@ -91,7 +91,12 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
 - Sweep tests: backfill idempotency; discovery cap/floor honored, call-count
   bound asserted; a `conflicts` classification enqueues a `conflict` item
   (deduplicated the same way as other kinds) and a superseded side never
-  becomes a live conflict target; archival only touches clock-eligible rows;
-  all three no-op cleanly on empty input.
+  becomes a live conflict target; a `recorded_at` tie between two candidates
+  is tie-broken by `decision_id` in the temporal-order filter, so exactly one
+  of `(A, B)`/`(B, A)` ever survives for every taxonomy kind — regression-
+  tested via `conflicts`, since `CONFLICTS_WITH` is symmetric and a
+  reversed-pair duplicate would otherwise double `history().conflicts`;
+  archival only touches clock-eligible rows; all three no-op cleanly on empty
+  input.
 - Export content check: includes domains registry; excludes embeddings; JSON
   schema check → spot re-hydration equality (import itself is v2).
