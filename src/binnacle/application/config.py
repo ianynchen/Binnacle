@@ -4,6 +4,7 @@ reads, fail-at-construction validation, multiple independently configured
 instances coexist (nothing here is process-global).
 """
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -14,6 +15,16 @@ from binnacle.domain.errors import ConfigError
 # FR-7.4 discovery default: top-k neighbors considered per newly embedded
 # decision, capped at 10 (REQUIREMENTS FR-7.4 "k configurable, default ≤10").
 _MAX_DISCOVERY_K = 10
+
+# `schema_name` is interpolated directly into DDL/DML f-strings in
+# `adapters.postgres_store` (identifiers can't be bound as query params in
+# psycopg — Postgres has no parameter syntax for a schema-qualified table
+# name), so an unvalidated value is a SQL-injection vector. Restricted to what
+# Postgres accepts unquoted as an identifier anyway (lowercase-normalized,
+# `[a-z_][a-z0-9_]*`, <=63 bytes) — deliberately duplicated in
+# `PostgresStore.__init__` (see that module) since the store is constructible
+# directly, bypassing this config object entirely.
+_SCHEMA_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 
 class DiscoveryConfig(BaseModel):
@@ -62,5 +73,15 @@ class BinnacleConfig(BaseModel):
     def _validate_dsn_xor_pool(self) -> "BinnacleConfig":
         if (self.dsn is None) == (self.pool is None):
             msg = "BinnacleConfig requires exactly one of dsn or pool"
+            raise ConfigError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_schema_name(self) -> "BinnacleConfig":
+        if not _SCHEMA_NAME_RE.match(self.schema_name):
+            msg = (
+                f"schema_name {self.schema_name!r} is not a valid identifier "
+                f"(must match {_SCHEMA_NAME_RE.pattern!r})"
+            )
             raise ConfigError(msg)
         return self

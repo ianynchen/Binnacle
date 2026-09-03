@@ -97,6 +97,47 @@ class TestDiscoveryCaps:
         assert config.k == 10
 
 
+class TestSchemaNameValidation:
+    """`schema_name` is interpolated directly into DDL/DML f-strings in
+    `adapters.postgres_store` (SQL injection if unvalidated) -- construction
+    must reject anything that isn't a plain lowercase identifier, matching
+    what Postgres accepts unquoted."""
+
+    def test_hostile_value_rejected(self) -> None:
+        hostile = "binj; CREATE TABLE public.pwned_by_config (x int); --"
+        with pytest.raises(ConfigError):
+            BinnacleConfig(dsn="postgresql://x", embedder=_embedder(), schema_name=hostile)
+
+    def test_double_quote_rejected(self) -> None:
+        with pytest.raises(ConfigError):
+            BinnacleConfig(dsn="postgresql://x", embedder=_embedder(), schema_name='foo"; --')
+
+    def test_uppercase_rejected(self) -> None:
+        with pytest.raises(ConfigError):
+            BinnacleConfig(dsn="postgresql://x", embedder=_embedder(), schema_name="Binnacle")
+
+    def test_empty_string_rejected(self) -> None:
+        with pytest.raises(ConfigError):
+            BinnacleConfig(dsn="postgresql://x", embedder=_embedder(), schema_name="")
+
+    def test_leading_digit_rejected(self) -> None:
+        with pytest.raises(ConfigError):
+            BinnacleConfig(dsn="postgresql://x", embedder=_embedder(), schema_name="1tenant")
+
+    def test_default_schema_name_accepted(self) -> None:
+        config = BinnacleConfig(dsn="postgresql://x", embedder=_embedder())
+        assert config.schema_name == "binnacle"
+
+    def test_legal_custom_names_accepted(self) -> None:
+        for name in ("tenant_a", "_private", "a" * 63, "tenant2"):
+            config = BinnacleConfig(dsn="postgresql://x", embedder=_embedder(), schema_name=name)
+            assert config.schema_name == name
+
+    def test_name_over_63_bytes_rejected(self) -> None:
+        with pytest.raises(ConfigError):
+            BinnacleConfig(dsn="postgresql://x", embedder=_embedder(), schema_name="a" * 64)
+
+
 class TestMultipleInstancesCoexist:
     """FR-8.1: "multiple independently configured instances may coexist" — no
     global/process state, so two configs never interfere with each other."""

@@ -27,6 +27,7 @@ tests/db/test_migrations.py, not only through `migrate()`):
 """
 
 import asyncio
+import re
 import tempfile
 from collections import defaultdict
 from collections.abc import AsyncIterator, Sequence
@@ -98,6 +99,14 @@ _EXPORT_SCHEMA_VERSION = 1
 # stop on revisit (correct termination for any finite graph, cyclic or not); this
 # cap is an extra hard stop in case that tracking is ever wrong.
 _HISTORY_MAX_DEPTH = 64
+
+# `self._schema` is interpolated directly into every DDL/DML f-string below
+# (psycopg has no bind-parameter syntax for identifiers), so an unvalidated
+# value is a SQL-injection vector. `BinnacleConfig` validates this same
+# pattern, but `PostgresStore` is constructible directly (bypassing that
+# config object entirely, e.g. in tests), so it re-validates here rather than
+# trusting every caller to have gone through `BinnacleConfig` first.
+_SCHEMA_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 
 class _PgTx(Tx):
@@ -215,10 +224,17 @@ class PostgresStore:
         """Construct with exactly one of `dsn` or `pool`.
 
         Raises:
-            ConfigError: both or neither of `dsn`/`pool` were supplied.
+            ConfigError: both or neither of `dsn`/`pool` were supplied, or
+                `schema_name` is not a valid identifier.
         """
         if (dsn is None) == (pool is None):
             msg = "PostgresStore requires exactly one of dsn or pool"
+            raise ConfigError(msg)
+        if not _SCHEMA_NAME_RE.match(schema_name):
+            msg = (
+                f"schema_name {schema_name!r} is not a valid identifier "
+                f"(must match {_SCHEMA_NAME_RE.pattern!r})"
+            )
             raise ConfigError(msg)
         self._dsn = dsn
         self._pool = pool
