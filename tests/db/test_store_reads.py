@@ -6,6 +6,7 @@ archives/discards others, and a later decision supplements the survivor — then
 exercises every read method against that one coherent fixture.
 """
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -323,6 +324,32 @@ class TestRelevant:
         results = await store.relevant(text="circuit breaker")
         assert {d.id for d in results} == {narrative.other_component}
 
+    async def test_text_filter_escapes_ilike_metacharacters(self, store: PostgresStore) -> None:
+        """`_` and `%` are ILIKE wildcards (any-one-char, any-run-of-chars); a
+        literal search for either must not mis-match text that merely fits the
+        wildcard pattern."""
+        literal_underscore = _decision(outcome="reindex the user_id column")
+        underscore_wildcard_trap = _decision(outcome="reindex the userXid column")
+        literal_percent = _decision(outcome="roll out to 50% of users")
+        percent_wildcard_trap = _decision(outcome="roll out to 50XXXXX of users")
+        async with store.transaction() as tx:
+            for d in (
+                literal_underscore,
+                underscore_wildcard_trap,
+                literal_percent,
+                percent_wildcard_trap,
+            ):
+                await store.insert_decision(tx, d, f"h-{d.decision_id}")
+                await store.apply_transition(
+                    tx, d.decision_id, "recorded", HUMAN.as_str(), None, None, "current"
+                )
+
+        underscore_results = {d.id for d in await store.relevant(text="user_id")}
+        assert underscore_results == {literal_underscore.decision_id}
+
+        percent_results = {d.id for d in await store.relevant(text="50% of users")}
+        assert percent_results == {literal_percent.decision_id}
+
     async def test_compact_projection_truncates_outcome_in_sql(
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
@@ -396,6 +423,22 @@ class TestHistory:
     async def test_unknown_decision_raises_decision_not_found(self, store: PostgresStore) -> None:
         with pytest.raises(DecisionNotFound):
             await store.history(uuid4())
+
+    async def test_cyclic_supersedes_terminates_without_hanging(self, store: PostgresStore) -> None:
+        """The Lifecycle Engine (not built yet) is what's supposed to keep SUPERSEDES
+        acyclic; this is the read path's own defense-in-depth against a cycle that
+        somehow lands in the data anyway (bare insert_link has no such check)."""
+        a, b = _decision(), _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, a, "h-a")
+            await store.insert_decision(tx, b, "h-b")
+            await store.insert_link(tx, a.decision_id, b.decision_id, "SUPERSEDES")
+            await store.insert_link(tx, b.decision_id, a.decision_id, "SUPERSEDES")
+
+        h = await asyncio.wait_for(store.history(a.decision_id), timeout=5)
+        assert h.decision.decision_id == a.decision_id
+        assert b.decision_id in [d.decision_id for d in h.predecessors]
+        assert b.decision_id in [d.decision_id for d in h.successors]
 
 
 class TestChanges:

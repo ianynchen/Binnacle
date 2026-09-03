@@ -90,6 +90,15 @@ _DEFAULT_RELEVANT_STATUS = frozenset({"current"})
 # from `decisions.schema_version`).
 _EXPORT_SCHEMA_VERSION = 1
 
+# history()'s supersession-chain CTEs walk `links` kind SUPERSEDES, which the
+# Lifecycle Engine keeps acyclic by construction (docs/ARCHITECTURE.md §4: "checked
+# in Lifecycle Engine via chain walk, not a DB constraint") — but that engine
+# doesn't exist yet, and even once it does, a read path shouldn't trust writes it
+# didn't validate itself (defense-in-depth). Both CTEs below track visited ids and
+# stop on revisit (correct termination for any finite graph, cyclic or not); this
+# cap is an extra hard stop in case that tracking is ever wrong.
+_HISTORY_MAX_DEPTH = 64
+
 
 class _PgTx(Tx):
     """Concrete `Tx`: carries the psycopg connection for one write transaction."""
@@ -181,6 +190,15 @@ def _row_to_decision(
         metadata=row["metadata"],
         schema_version=row["schema_version"],
     )
+
+
+def _escape_ilike(text: str) -> str:
+    """Escape `text` for use inside an ILIKE pattern (`relevant()`'s lexical
+    filter, FR-6.1): backslash first (so it doesn't double-escape the `%`/`_`
+    escapes it introduces), then `%` and `_`, Postgres's ILIKE metacharacters.
+    Postgres's default `ESCAPE` character is already backslash, so callers just
+    wrap the result in `%...%` — no explicit `ESCAPE` clause needed."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class PostgresStore:
@@ -665,7 +683,7 @@ class PostgresStore:
             conditions.append(
                 "(d.scenario ILIKE %(text)s OR d.outcome ILIKE %(text)s OR d.reasoning ILIKE %(text)s)"
             )
-            params["text"] = f"%{text}%"
+            params["text"] = f"%{_escape_ilike(text)}%"
         where_sql = " AND ".join(conditions)
 
         if compact_chars is not None:
@@ -732,25 +750,29 @@ class PostgresStore:
 
             cur = await conn.execute(
                 f"WITH RECURSIVE pred AS ("
-                f"  SELECT to_id AS decision_id, 1 AS depth FROM {schema}.links "
-                "   WHERE from_id = %(id)s AND kind = 'SUPERSEDES'"
+                f"  SELECT to_id AS decision_id, 1 AS depth, ARRAY[from_id, to_id] AS visited"
+                f"  FROM {schema}.links WHERE from_id = %(id)s AND kind = 'SUPERSEDES'"
                 "  UNION ALL"
-                f"  SELECT l.to_id, p.depth + 1 FROM {schema}.links l "
-                "   JOIN pred p ON l.from_id = p.decision_id WHERE l.kind = 'SUPERSEDES'"
+                f"  SELECT l.to_id, p.depth + 1, p.visited || l.to_id"
+                f"  FROM {schema}.links l JOIN pred p ON l.from_id = p.decision_id"
+                "   WHERE l.kind = 'SUPERSEDES' AND NOT (l.to_id = ANY(p.visited))"
+                "   AND p.depth < %(max_depth)s"
                 ") SELECT decision_id FROM pred ORDER BY depth",
-                {"id": decision_id},
+                {"id": decision_id, "max_depth": _HISTORY_MAX_DEPTH},
             )
             predecessor_ids = [r["decision_id"] async for r in cur]
 
             cur = await conn.execute(
                 f"WITH RECURSIVE succ AS ("
-                f"  SELECT from_id AS decision_id, 1 AS depth FROM {schema}.links "
-                "   WHERE to_id = %(id)s AND kind = 'SUPERSEDES'"
+                f"  SELECT from_id AS decision_id, 1 AS depth, ARRAY[to_id, from_id] AS visited"
+                f"  FROM {schema}.links WHERE to_id = %(id)s AND kind = 'SUPERSEDES'"
                 "  UNION ALL"
-                f"  SELECT l.from_id, s.depth + 1 FROM {schema}.links l "
-                "   JOIN succ s ON l.to_id = s.decision_id WHERE l.kind = 'SUPERSEDES'"
+                f"  SELECT l.from_id, s.depth + 1, s.visited || l.from_id"
+                f"  FROM {schema}.links l JOIN succ s ON l.to_id = s.decision_id"
+                "   WHERE l.kind = 'SUPERSEDES' AND NOT (l.from_id = ANY(s.visited))"
+                "   AND s.depth < %(max_depth)s"
                 ") SELECT decision_id FROM succ ORDER BY depth",
-                {"id": decision_id},
+                {"id": decision_id, "max_depth": _HISTORY_MAX_DEPTH},
             )
             successor_ids = [r["decision_id"] async for r in cur]
 
