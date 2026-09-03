@@ -102,6 +102,22 @@ class StorePort(Protocol):
         starving the pool)."""
         ...
 
+    async def get_decision_tx(self, tx: Tx, decision_id: UUID) -> Decision | None:
+        """`get_decision`, but executed on `tx`'s own connection instead of a
+        second pooled one — for lifecycle acts that need a decision's full
+        content while already holding its row lock (e.g. `promote` copying its
+        source's content into the long-term row) inside an open transaction."""
+        ...
+
+    async def transitions_for(self, tx: Tx, decision_id: UUID) -> list[Transition]:
+        """Every transition for `decision_id`, oldest first — the same query
+        `history()` runs, but on `tx`'s own connection. Exists for the same
+        pool-exhaustion reason as `predecessor_chain`: `reactivate`/
+        `recommend`'s implicit-reactivation path needs a decision's own
+        transition log to compute the status to restore, while already holding
+        that decision's row lock inside its own open transaction."""
+        ...
+
     async def insert_decision(self, tx: Tx, d: Decision, content_hash: str) -> InsertOutcome:
         """Insert `d`, never UPDATE (I-3).
 

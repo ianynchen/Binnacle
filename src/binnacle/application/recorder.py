@@ -71,7 +71,7 @@ async def insert_new_decision(
     )
     outcome = await store.insert_decision(tx, decision, nd.content_hash())
     if outcome == "exists_identical":
-        existing = await store.get_decision(decision_id)
+        existing = await store.get_decision_tx(tx, decision_id)
         assert existing is not None, "insert_decision reported exists_identical for a missing row"
         if existing.tier != tier:
             # `content_hash` never covers `tier` (NewDecision.content_hash()'s

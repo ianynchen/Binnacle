@@ -182,7 +182,7 @@ class LifecycleEngine:
                 msg = "source is not eligible for promotion"
                 raise InvalidTransition(row.status, "promote", msg)
 
-            source = await self._store.get_decision(source_id)
+            source = await self._store.get_decision_tx(tx, source_id)
             assert source is not None, "locked row disappeared mid-transaction"
             lt_copy, _ = await insert_new_decision(
                 self._store, tx, _verbatim_copy(source), actor, "long_term", "current"
@@ -528,20 +528,26 @@ class LifecycleEngine:
                 return view
         return None
 
-    async def _restored_status(self, decision_id: UUID) -> str:
+    async def _restored_status(self, tx: Tx, decision_id: UUID) -> str:
         """The status recorded immediately before the transition that most
         recently set `new_status='archived'` — computed from the transition log,
         which the acyclicity of the fold (I-1) guarantees is well-defined once a
-        decision has actually been archived."""
-        history = await self._store.history(decision_id)
-        non_null = [t.new_status for t in history.transitions if t.new_status is not None]
+        decision has actually been archived.
+
+        Uses `transitions_for` (tx-scoped) rather than `history` (a second
+        pooled connection) for the same pool-exhaustion reason as
+        `_check_acyclic`'s `predecessor_chain`: this always runs while the
+        caller already holds `decision_id`'s row lock inside its own open
+        transaction."""
+        transitions = await self._store.transitions_for(tx, decision_id)
+        non_null = [t.new_status for t in transitions if t.new_status is not None]
         return non_null[-2]
 
     async def _reactivate_locked(self, tx: Tx, decision_id: UUID, actor: Actor) -> None:
         """Write the `reactivated` transition for an already-locked, already
         confirmed-`archived` decision. Factored out so `recommend`'s implicit
         reactivation and `reactivate` itself share one implementation."""
-        restored = await self._restored_status(decision_id)
+        restored = await self._restored_status(tx, decision_id)
         await self._store.apply_transition(
             tx, decision_id, "reactivated", actor.as_str(), None, None, restored
         )

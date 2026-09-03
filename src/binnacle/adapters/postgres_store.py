@@ -361,6 +361,26 @@ class PostgresStore:
         )
         return [row["decision_id"] async for row in cur]
 
+    async def get_decision_tx(self, tx: Tx, decision_id: UUID) -> Decision | None:
+        conn = self._conn(tx)
+        cur = await conn.execute(
+            f"SELECT * FROM {self._schema}.decisions WHERE decision_id = %s", (decision_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        decisions = await self._hydrate_decisions(conn, [row])
+        return decisions[0]
+
+    async def transitions_for(self, tx: Tx, decision_id: UUID) -> list[Transition]:
+        conn = self._conn(tx)
+        cur = await conn.execute(
+            f"SELECT * FROM {self._schema}.transitions WHERE decision_id = %s "
+            "ORDER BY at ASC, transition_id ASC",
+            (decision_id,),
+        )
+        return [_row_to_transition(row) async for row in cur]
+
     async def insert_decision(self, tx: Tx, d: Decision, content_hash: str) -> InsertOutcome:
         conn = self._conn(tx)
         decided_at = d.decided_at if d.decided_at is not None else d.recorded_at

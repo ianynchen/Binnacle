@@ -1232,6 +1232,31 @@ class TestTargeted:
         for old, _new in pairs:
             assert await _status(store, old.decision_id) == "superseded"
 
+    async def test_concurrent_reactivates_on_disjoint_decisions_do_not_exhaust_pool(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """`_restored_status`'s transition-log read must also run on the act's
+        OWN transaction connection (reached from `reactivate()` directly and
+        from `recommend()`'s implicit-reactivation path) — the same
+        pool-exhaustion shape as the supersede case above: N >= pool-size fully
+        independent concurrent `reactivate()` calls on disjoint archived
+        decisions would each hold one connection (via their own
+        `transaction()`) and then block forever waiting for a second one to
+        read their own transition log, since every other concurrent call is
+        doing the same thing."""
+        decisions = [await reach(engine, store, "short_term", "archived") for _ in range(6)]
+
+        async def reactivate_one(d: Decision) -> None:
+            await engine.reactivate(d.decision_id, RECORDER)
+
+        await asyncio.wait_for(
+            asyncio.gather(*(reactivate_one(d) for d in decisions)),
+            timeout=10,
+        )
+
+        for d in decisions:
+            assert await _status(store, d.decision_id) == "current"
+
     async def test_promote_vs_supersede_race(
         self, engine: LifecycleEngine, store: PostgresStore
     ) -> None:

@@ -305,6 +305,58 @@ class TestPredecessorChain:
         assert chain == []
 
 
+class TestGetDecisionTx:
+    """Executed on the caller's own `tx` (no second pooled connection) — the
+    Lifecycle Engine needs this for reads made while already holding a
+    decision's row lock inside its own open transaction (e.g. `promote`
+    copying its source's content)."""
+
+    async def test_returns_hydrated_decision(self, store: PostgresStore) -> None:
+        d = _decision()
+        refs = [Ref(role="subject", kind="component", identifier="waypoint")]
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, d, "h1")
+            await store.insert_refs(tx, d.decision_id, refs)
+            fetched = await store.get_decision_tx(tx, d.decision_id)
+        assert fetched is not None
+        assert fetched.decision_id == d.decision_id
+        assert fetched.scenario == d.scenario
+        assert fetched.outcome == d.outcome
+        assert fetched.refs == refs
+
+    async def test_returns_none_for_missing_id(self, store: PostgresStore) -> None:
+        async with store.transaction() as tx:
+            fetched = await store.get_decision_tx(tx, uuid4())
+        assert fetched is None
+
+
+class TestTransitionsFor:
+    """Executed on the caller's own `tx` — `reactivate`/`recommend`'s implicit
+    reactivation needs a decision's transition log while already holding that
+    decision's row lock inside its own open transaction."""
+
+    async def test_empty_for_a_decision_with_no_transitions(self, store: PostgresStore) -> None:
+        d = _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, d, "h1")
+            transitions = await store.transitions_for(tx, d.decision_id)
+        assert transitions == []
+
+    async def test_returns_transitions_oldest_first(self, store: PostgresStore) -> None:
+        d = _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, d, "h1")
+            await store.apply_transition(
+                tx, d.decision_id, "recorded", HUMAN.as_str(), None, None, "current"
+            )
+            await store.apply_transition(
+                tx, d.decision_id, "archived", HUMAN.as_str(), None, None, "archived"
+            )
+            transitions = await store.transitions_for(tx, d.decision_id)
+        assert [t.action for t in transitions] == ["recorded", "archived"]
+        assert [t.new_status for t in transitions] == ["current", "archived"]
+
+
 class TestDomains:
     async def test_domain_exists(self, store: PostgresStore) -> None:
         async with store.transaction() as tx:
