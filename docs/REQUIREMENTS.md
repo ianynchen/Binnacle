@@ -319,12 +319,13 @@ Consumer → capability map (each row traceable to the FRs below):
   directly to the relational schema.
 - **OQ-2** ~~Queue storage~~ **Resolved (2026-09-03):** relational (queue and
   transitions tables; ARCHITECTURE §4).
-- **OQ-3** Embedding model choice for precedent search — which model turns
-  decision text into vectors for similarity lookup. Deferred deliberately: the
-  vector dimension is fixed in the schema at migration time and changing models
-  means re-embedding the record, so the choice is made once, fleet-wide, when
-  meridian standardizes its embedding model. Wired via the `Embedder` port; a
-  deterministic stub suffices for development and tests.
+- **OQ-3** ~~Embedding model choice~~ **Resolved (2026-09-03):**
+  sentence-transformers `all-MiniLM-L6-v2` (384 dimensions) — semantica's own
+  default, verified in its source; local, free, offline-capable, CPU-adequate for
+  the design scale. Implemented as the embedder-side `Embedder` adapter (binnacle
+  stays model-ignorant behind the port; tests use a deterministic stub). A future
+  model change is one dimension migration plus re-embedding the record — cheap at
+  this scale.
 
 ## 7. The Life of a Decision — a narrative walkthrough
 

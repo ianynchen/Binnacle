@@ -81,7 +81,7 @@ class Embedder(Protocol):
 ```
 
 Core never constructs an LLM or embedding client (FR-7.1). Meridian fulfills both
-(tradewind light tier; embedding model per OQ-3). Development/test fulfillment: a
+(tradewind light tier; embeddings via sentence-transformers all-MiniLM-L6-v2 per OQ-3). Development/test fulfillment: a
 deterministic stub embedder and a scripted suggester.
 
 ## 4. Domain Model and Schema
@@ -282,8 +282,10 @@ src/binnacle/
 
 - **P-1** Driver confirmation (psycopg3-async vs asyncpg) — settle at plan time
   with a spike if pgvector adaptation proves awkward.
-- **P-2** Embedding model (OQ-3) — meridian's choice; stub embedder until then;
-  `embeddings.embedding` dimension fixed per deployment at migration time.
+- **P-2** ~~Embedding model~~ **Resolved:** `all-MiniLM-L6-v2` via
+  sentence-transformers, 384-dim (OQ-3) — fulfilled by meridian's `Embedder`
+  adapter; binnacle's schema fixes `VECTOR(384)` at migration; tests use the
+  deterministic stub.
 - **P-3** v2 items per REQUIREMENTS §5 — graph layer (AGE + semantica machinery)
   with its named triggers; conflict detection; scope hierarchy; Parquet offload;
   Markdown export; transcript extraction.
