@@ -27,15 +27,15 @@ fail at construction):
 ```python
 class BinnacleConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    dsn: str | None = None                  # or pool=<caller-supplied psycopg pool>; exactly one
+    dsn: str | None = None  # or pool=<caller-supplied psycopg pool>; exactly one
     pool: Any | None = None
-    schema_name: str = "binnacle"           # ARCHITECTURE §4.1
-    embedder: Embedder                      # live port (nomic adapter in meridian; stub in tests)
-    suggester: Suggester | None = None      # live port; None disables discovery classification
-    embedding_dim: int = 768                # must match the migrated VECTOR(n) column
-    archival_age_days: int = 90             # FR-3.4
-    compact_outcome_chars: int = 200        # FR-6.7 compact-projection truncation
-    discovery: DiscoveryConfig = DiscoveryConfig()   # k (≤10), confidence_floor, per_sweep_cap
+    schema_name: str = "binnacle"  # ARCHITECTURE §4.1
+    embedder: Embedder  # live port (nomic adapter in meridian; stub in tests)
+    suggester: Suggester | None = None  # live port; None disables discovery classification
+    embedding_dim: int = 768  # must match the migrated VECTOR(n) column
+    archival_age_days: int = 90  # FR-3.4
+    compact_outcome_chars: int = 200  # FR-6.7 compact-projection truncation
+    discovery: DiscoveryConfig = DiscoveryConfig()  # k (≤10), confidence_floor, per_sweep_cap
 ```
 
 ## Client API (async-first)

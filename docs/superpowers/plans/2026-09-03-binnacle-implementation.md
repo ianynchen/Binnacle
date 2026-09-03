@@ -88,6 +88,7 @@ import os, uuid, pytest, psycopg
 
 DSN = os.environ.get("BINNACLE_TEST_DSN", "postgresql://localhost:5432/binnacle_test")
 
+
 @pytest.fixture(scope="session")
 def pg_dsn() -> str:
     try:
@@ -97,8 +98,9 @@ def pg_dsn() -> str:
         pytest.skip(f"postgres unreachable at {DSN}: {exc}")
     return DSN
 
+
 @pytest.fixture()
-def scratch_schema(pg_dsn: str) -> str:   # yields a unique schema name; drops it after
+def scratch_schema(pg_dsn: str) -> str:  # yields a unique schema name; drops it after
     name = f"bt_{uuid.uuid4().hex[:12]}"
     yield name
     with psycopg.connect(pg_dsn, autocommit=True) as c:
@@ -119,15 +121,34 @@ def scratch_schema(pg_dsn: str) -> str:   # yields a unique schema name; drops i
 ```python
 # errors.py
 class BinnacleError(Exception): ...
+
+
 class ConfigError(BinnacleError): ...
+
+
 class UnknownDomain(BinnacleError): ...
+
+
 class DecisionNotFound(BinnacleError): ...
-class InvalidTransition(BinnacleError): ...      # carries from_status, attempted action
+
+
+class InvalidTransition(BinnacleError): ...  # carries from_status, attempted action
+
+
 class AuthorityViolation(BinnacleError): ...
+
+
 class IdempotencyConflict(BinnacleError): ...
+
+
 class EmbeddingDimensionMismatch(BinnacleError): ...
+
+
 class ItemNotFound(BinnacleError): ...
+
+
 class ItemAlreadyResolved(BinnacleError): ...
+
 
 # models.py (pydantic v2 for validated inputs; frozen dataclasses for records)
 ActorKind = Literal["human", "agent", "engine"]
@@ -137,49 +158,89 @@ LongStatus = Literal["current", "superseded"]
 LinkKind = Literal["SUPERSEDES", "SUPPLEMENTS", "PROMOTED_FROM"]
 QueueKind = Literal["promote", "link", "supersede"]
 RefRole = Literal["subject", "evidence"]
-TransitionAction = Literal["recorded", "recommended", "promoted", "declined",
-    "discarded", "superseded", "supplement_linked", "archived", "reactivated",
-    "voided", "dismissed"]
+TransitionAction = Literal[
+    "recorded",
+    "recommended",
+    "promoted",
+    "declined",
+    "discarded",
+    "superseded",
+    "supplement_linked",
+    "archived",
+    "reactivated",
+    "voided",
+    "dismissed",
+]
+
 
 @dataclass(frozen=True)
 class Actor:
     kind: ActorKind
     id: str
-    def as_str(self) -> str: ...            # "kind:id"; parse with Actor.from_str()
+
+    def as_str(self) -> str: ...  # "kind:id"; parse with Actor.from_str()
+
 
 class Ref(BaseModel):
-    role: RefRole; kind: str; identifier: str; note: str | None = None
+    role: RefRole
+    kind: str
+    identifier: str
+    note: str | None = None
 
-class NewDecision(BaseModel):               # the recording input (FR-1.1)
-    domain: str; scenario: str; outcome: str; reasoning: str
+
+class NewDecision(BaseModel):  # the recording input (FR-1.1)
+    domain: str
+    scenario: str
+    outcome: str
+    reasoning: str
     source: str
-    decision_id: UUID | None = None         # FR-1.6
-    options_considered: list[OptionConsidered] = []   # OptionConsidered(option, why_rejected)
+    decision_id: UUID | None = None  # FR-1.6
+    options_considered: list[OptionConsidered] = []  # OptionConsidered(option, why_rejected)
     consequences: str | None = None
-    confidence: float | None = None         # 0..1 validated
-    decided_at: datetime | None = None      # FR-1.7
-    valid_from: datetime | None = None; valid_until: datetime | None = None
+    confidence: float | None = None  # 0..1 validated
+    decided_at: datetime | None = None  # FR-1.7
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
     refs: list[Ref] = []
-    supersedes: list[UUID] = []; supplements: list[UUID] = []
+    supersedes: list[UUID] = []
+    supplements: list[UUID] = []
     metadata: dict[str, Any] = {}
-    def content_hash(self) -> str: ...      # sha256 over canonical JSON of content fields (FR-1.6)
+
+    def content_hash(self) -> str: ...  # sha256 over canonical JSON of content fields (FR-1.6)
+
 
 @dataclass(frozen=True)
-class Decision: ...        # full stored record: all NewDecision content + decision_id, tier,
-                           # status, recorded_by, recorded_at, decided_at, schema_version
+class Decision:
+    ...  # full stored record: all NewDecision content + decision_id, tier,
+    # status, recorded_by, recorded_at, decided_at, schema_version
+
+
 @dataclass(frozen=True)
-class CompactDecision: ... # id, domain, tier, status, outcome_truncated, subject_refs (FR-6.7)
+class CompactDecision: ...  # id, domain, tier, status, outcome_truncated, subject_refs (FR-6.7)
+
+
 @dataclass(frozen=True)
-class Transition: ...      # transition_id, decision_id, action, actor, at, reason, new_status, payload
+class Transition: ...  # transition_id, decision_id, action, actor, at, reason, new_status, payload
+
+
 @dataclass(frozen=True)
-class Link: ...            # from_id, to_id, kind
+class Link: ...  # from_id, to_id, kind
+
+
 @dataclass(frozen=True)
-class QueueItem: ...       # item_id, kind, decision_id, target_id, proposed_by, proposed_at,
-                           # rationale, confidence, resolved
+class QueueItem:
+    ...  # item_id, kind, decision_id, target_id, proposed_by, proposed_at,
+    # rationale, confidence, resolved
+
+
 @dataclass(frozen=True)
-class CandidatePair: ...   # decision: CompactDecision, other: CompactDecision, similarity: float
+class CandidatePair: ...  # decision: CompactDecision, other: CompactDecision, similarity: float
+
+
 @dataclass(frozen=True)
-class Suggestion: ...      # kind: Literal["supersedes","supplements","unrelated"], rationale, confidence
+class Suggestion: ...  # kind: Literal["supersedes","supplements","unrelated"], rationale, confidence
+
+
 @dataclass(frozen=True)
 class PromotionAssessment: ...  # decision_id, recommend: bool, rationale, confidence
 ```
