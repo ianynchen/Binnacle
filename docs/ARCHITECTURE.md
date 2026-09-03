@@ -122,7 +122,8 @@ CREATE TABLE decisions (
 CREATE TABLE links (                           -- all inter-decision relationships
   from_id UUID NOT NULL REFERENCES decisions(decision_id),
   to_id   UUID NOT NULL REFERENCES decisions(decision_id),
-  kind    TEXT NOT NULL,                       -- 'SUPERSEDES' | 'SUPPLEMENTS' | 'PROMOTED_FROM'
+  kind    TEXT NOT NULL,                       -- 'SUPERSEDES' | 'SUPPLEMENTS' | 'PROMOTED_FROM' |
+                                               -- 'CONFLICTS_WITH'
   PRIMARY KEY (from_id, kind, to_id)
 );
 
@@ -139,7 +140,8 @@ CREATE TABLE transitions (
   transition_id BIGSERIAL PRIMARY KEY,
   decision_id   UUID NOT NULL REFERENCES decisions(decision_id),
   action        TEXT NOT NULL,                 -- recorded|recommended|promoted|declined|discarded|
-                                               -- superseded|supplement_linked|archived|reactivated|...
+                                               -- superseded|supplement_linked|archived|reactivated|
+                                               -- conflict_accepted|...
   actor         TEXT NOT NULL,                 -- "kind:id" (kind ∈ human|agent|engine)
   at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   reason        TEXT,
@@ -150,7 +152,7 @@ CREATE TABLE transitions (
 
 CREATE TABLE queue (
   item_id     BIGSERIAL PRIMARY KEY,
-  kind        TEXT NOT NULL,                   -- 'promote' | 'link' | 'supersede'
+  kind        TEXT NOT NULL,                   -- 'promote' | 'link' | 'supersede' | 'conflict'
   decision_id UUID NOT NULL REFERENCES decisions(decision_id),
   target_id   UUID REFERENCES decisions(decision_id),
   proposed_by TEXT NOT NULL, proposed_at TIMESTAMPTZ NOT NULL,
@@ -343,5 +345,6 @@ src/binnacle/
   `scenario + outcome + reasoning` concatenated; tests use the deterministic
   stub.
 - **P-3** v2 items per REQUIREMENTS §5 — graph layer (AGE + semantica machinery)
-  with its named triggers; conflict detection; scope hierarchy; Parquet offload;
-  Markdown export; transcript extraction.
+  with its named triggers; scope hierarchy; Parquet offload; Markdown export;
+  transcript extraction. (Conflict detection, formerly listed here, shipped in
+  v1 — REQUIREMENTS FR-5.4/FR-7.2.)

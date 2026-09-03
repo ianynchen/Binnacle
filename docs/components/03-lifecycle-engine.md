@@ -55,8 +55,9 @@ rows — a pending item never changes any status (I-4).
 | supersede | actor; human AND long_term successor required if target is long_term (FR-5.2a) | link + target→`superseded` + transitions on both + auto-`voided` resolution of the target's open queue items |
 | supplement | actor; human if target is long_term | link + `supplement_linked` transitions; NO status change (FR-5.3) |
 | archive / reactivate | engine (sweep) / any-on-own, human-on-any | status flip + transition |
-| apply-item | human (always, since suggested links/supersedes may touch LT) | executes the suggested link/supersede + queue resolve + transitions (`payload.item_id`) |
-| dismiss-item | human | queue resolve as dismissed + transition; record untouched |
+| apply-item | human (always, since suggested links/supersedes may touch LT) | executes the suggested link/supersede + queue resolve + transitions (`payload.item_id`); refuses `conflict` items (`InvalidTransition` pointing to resolve-conflict) |
+| resolve-conflict | human (always) | `conflict` item only; exactly one of: winner_id (supersede winner over loser, full existing supersede rules) / refined (new decision supersedes both sides, tier-forced per FR-5.2a) / neither+reason (CONFLICTS_WITH link + `conflict_accepted` transitions on both, no status change) + queue resolve |
+| dismiss-item | human | queue resolve as dismissed + transition; record untouched (works on `conflict` items too — a false positive) |
 
 ## Enforcement mechanics
 
@@ -79,6 +80,21 @@ rows — a pending item never changes any status (I-4).
 - **Pending-supersede execution at the gate**: promote scans the promoted
   decision's queued LT-supersede claims and executes them inside the same
   transaction — the only door such claims pass through.
+- **Conflict resolution** (FR-5.4): a `conflict` item names two decisions, both
+  `current` when discovery filed it. `winner_id` reuses `supersede`'s own
+  validation and execution helpers verbatim — the tier gate, acyclicity check,
+  and loser auto-void all apply unchanged. `refined` validates a NEW
+  `NewDecision` like any recording, forces its tier to `long_term` only when
+  either conflict side already is (mirroring `record_long_term`'s
+  `recorded`+`promoted` pair), then supersedes both sides — a side whose tier
+  doesn't match the refined decision's is refused by the SAME tier gate,
+  exactly as a direct cross-tier `supersede()` call would be; no acyclicity
+  check is needed for either side (the refined decision is a freshly minted id
+  with no existing links, same reasoning as the pending-supersede case above).
+  Accepting a conflict (neither `winner_id` nor `refined`, reason required)
+  inserts a `CONFLICTS_WITH` link and a `conflict_accepted` transition on both
+  sides with `new_status=None` — no status change, mirroring `supplement`'s
+  shape (FR-5.3).
 
 ## Acceptance
 
@@ -91,3 +107,11 @@ rows — a pending item never changes any status (I-4).
 - Refined-promotion test: multi-source consolidation produces one LT row, N
   `PROMOTED_FROM` links, N `promoted` sources, `refined: true` payloads.
 - Cycle test: A supersedes B, B supersedes A refused.
+- Conflict-resolution tests: all three `resolve_conflict` paths happy (winner
+  supersedes loser; refined consolidates both sides, short-term and — tier
+  forced — long-term; accept links + transitions both sides with no status
+  change and surfaces in `history()`); authority, wrong-item-kind, and
+  illegal-argument-combination refusals; the tier gate refusing a mixed-tier
+  `refined` consolidation exactly as a direct cross-tier `supersede()` would
+  be; `apply_item` refusing a `conflict` item; `dismiss_item` still resolving
+  one as a false positive.

@@ -28,7 +28,9 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
   `full`. Deterministic ordering (recency, then id).
 - **history()** — the full record of one decision: content, refs, transitions in
   order, links, and both chains (predecessors/successors via recursive CTE) plus
-  supplements. Includes archived/discarded targets (history hides nothing).
+  supplements and conflicts — decisions this one has an acknowledged
+  `CONFLICTS_WITH` link with, from `resolve_conflict`'s accept path. Includes
+  archived/discarded targets (history hides nothing).
 - **precedent()** — `Embedder.embed(question)` → HNSW k-NN joined to
   `decisions` with status filters (archived/discarded excluded via the join —
   HNSW cannot be partial on another table; over-fetch k×4 before filtering so
@@ -57,12 +59,14 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
   `discovered_at IS NULL` (set on completion; a sweep that dies resumes exactly
   where it stopped; over-cap decisions stay NULL for the next sweep). Per
   decision: k-NN (k ≤ config, default 10) → structural filters (same domain,
-  subject overlap, temporal order, status compatibility; FR-7.4) →
-  `Suggester.classify_pairs` (taxonomy: supersedes / supplements / unrelated —
-  no conflicts/related in v1) → queue items with rationale+confidence,
-  floor-filtered, per-sweep capped, deduplicated structurally by the partial
-  unique index on open items. Also `Suggester.assess_promotion` over aging
-  unrecommended short_term decisions → pending-promote items
+  subject overlap, temporal order, status compatibility — the SAME both-`current`
+  status-compat filter that makes `conflicts` meaningful: a superseded or
+  archived side is never a live conflict; FR-7.4) → `Suggester.classify_pairs`
+  (taxonomy: supersedes / supplements / conflicts / unrelated) → queue items
+  with rationale+confidence (kind `supersede` / `link` / `conflict`
+  respectively), floor-filtered, per-sweep capped, deduplicated structurally by
+  the partial unique index on open items. Also `Suggester.assess_promotion`
+  over aging unrecommended short_term decisions → pending-promote items
   (`proposed_by engine:binnacle`). No `Suggester` configured → sweep no-ops
   cleanly.
 - **archive_stale()** — FR-3.4 clock rule → bulk `archived` transitions via the
@@ -85,7 +89,9 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
 - Precedent test with the stub embedder: known-nearest fixtures return in score
   order; superseded ancestors present and labeled.
 - Sweep tests: backfill idempotency; discovery cap/floor honored, call-count
-  bound asserted; archival only touches clock-eligible rows; all three no-op
-  cleanly on empty input.
+  bound asserted; a `conflicts` classification enqueues a `conflict` item
+  (deduplicated the same way as other kinds) and a superseded side never
+  becomes a live conflict target; archival only touches clock-eligible rows;
+  all three no-op cleanly on empty input.
 - Export content check: includes domains registry; excludes embeddings; JSON
   schema check → spot re-hydration equality (import itself is v2).

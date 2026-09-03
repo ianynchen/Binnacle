@@ -61,8 +61,13 @@ await bn.supersede(new_id, old_id, actor)                        # I-2 gate appl
 await bn.supplement(new_id, old_id, actor)                       # same gate
 await bn.reactivate(decision_id, actor)                          # un-archive (FR-3.4)
 await bn.apply_item(item_id, actor)                              # execute a suggested link/supersede
-                                                                 #   item (human always)
+                                                                 #   item (human always); refuses
+                                                                 #   `conflict` items
+await bn.resolve_conflict(item_id, actor=human,                  # exactly one of winner_id / refined /
+                          winner_id=None, refined=None,          #   neither+reason; human always
+                          reason=None)
 await bn.dismiss_item(item_id, actor, reason)                    # negative resolution, any item kind
+                                                                 #   (including `conflict`)
 
 # Queries (FR-6):
 await bn.relevant(domains=None, subject=None, status=("current",), tier=None,
@@ -102,7 +107,10 @@ await bn.archive_stale()                     # FR-3.4
 - Errors are a typed hierarchy (`BinnacleError` root): `UnknownDomain`,
   `InactiveDomain`, `DecisionNotFound`, `InvalidTransition`,
   `AuthorityViolation`, `IdempotencyConflict` (FR-1.6),
-  `EmbeddingDimensionMismatch`, `ConfigError`.
+  `EmbeddingDimensionMismatch`, `ConfigError`, `ItemNotFound`,
+  `ItemAlreadyResolved`, `InvalidResolution` (`resolve_conflict`'s
+  `winner_id`/`refined`/`reason` argument misuse — distinct from
+  `InvalidTransition`, reserved for state-related illegality).
 
 ## Acceptance
 

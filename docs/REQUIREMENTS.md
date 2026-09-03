@@ -50,6 +50,10 @@ policy.
   superseded, linked to its successor.
 - **Supplement** — a decision qualifies or extends another that remains current;
   expressed as a relationship, never a status.
+- **Conflict** — two current decisions whose outcomes are in tension, surfaced by
+  discovery (FR-7.2) as a `conflicts` classification. Resolved only by a human
+  (`resolve_conflict`, FR-5.4): a declared winner, a refined decision
+  consolidating both sides, or acceptance as a standing, unresolved relationship.
 - **Precedent search** — embedding-similarity retrieval (with attribute and
   relationship filters) of prior decisions
   similar to a question at hand, deliberately including superseded and declined
@@ -128,14 +132,16 @@ policy.
   **promotion recommendation** on a short-term `current` decision (actor + reason
   recorded). Recommendations from all recommenders land in one review queue.
 - **FR-4.3** The review queue lists pending items (pending-promote, pending-link,
-  pending-supersede) with ordering support (age, confidence, domain). A human
-  resolves each item: **execute** it (promote for promote items; apply the
-  suggested link/supersede for link items), **decline/dismiss** it with a reason,
-  or **defer** — which simply means leaving it open (open items block their
-  decision's archival, FR-3.4). Every resolution is a transition carrying
-  `payload.item_id`, actor, and reason. When a decision leaves `current` outside
-  the gate (superseded or discarded), its open queue items are auto-resolved as
-  `voided` in the same transaction — no item is ever left unresolvable.
+  pending-supersede, pending-conflict) with ordering support (age, confidence,
+  domain). A human resolves each item: **execute** it (promote for promote
+  items; apply the suggested link/supersede for link/supersede items;
+  `resolve_conflict` for conflict items — see FR-5.4), **decline/dismiss** it
+  with a reason, or **defer** — which simply means leaving it open (open items
+  block their decision's archival, FR-3.4). Every resolution is a transition
+  carrying `payload.item_id`, actor, and reason. When a decision leaves
+  `current` outside the gate (superseded or discarded), its open queue items
+  are auto-resolved as `voided` in the same transaction — no item is ever left
+  unresolvable.
 - **FR-4.4 Direct long-term recording.** A human MAY record a decision directly into
   the long-term tier as one atomic act (semantically: record + promote, both
   transitions logged). Human-only — the gate is preserved; agents always land in
@@ -157,10 +163,11 @@ policy.
   `archived` and `not_promoted` are always revivable.
 
 ### FR-5 Relationships between decisions
-- **FR-5.1** Relationship kinds: `SUPERSEDES`, `SUPPLEMENTS`, plus the internal
-  `PROMOTED_FROM` provenance link. Relationships are established by: (a) declaration
-  at recording time, (b) confirmation of an engine suggestion, (c) post-hoc human
-  curation. Adding a relationship is an append.
+- **FR-5.1** Relationship kinds: `SUPERSEDES`, `SUPPLEMENTS`, `CONFLICTS_WITH`,
+  plus the internal `PROMOTED_FROM` provenance link. Relationships are
+  established by: (a) declaration at recording time, (b) confirmation of an
+  engine suggestion, (c) post-hoc human curation, (d) `resolve_conflict`'s
+  accept path (FR-5.4). Adding a relationship is an append.
 - **FR-5.2 Authority rule:** any relationship or status change that mutates a
   **long-term** decision (superseding it, linking it) executes only through the human
   gate. An agent's recorded claim that its short-term decision supersedes long-term
@@ -175,6 +182,20 @@ policy.
   alongside it. Binnacle records relationships between decisions; it does NOT
   adjudicate precedence between them (no rules engine) — meaning is resolved by the
   reader and expressed through curated relationships.
+- **FR-5.4 Conflict resolution.** A `conflicts` classification (FR-7.2) files a
+  pending-conflict queue item naming the two (both-`current`) decisions in
+  tension. Resolution is human-only (`resolve_conflict`) and exactly one of:
+  a declared winner — executes the item's own `supersede` over the other side,
+  under every existing supersede rule (tier gate, acyclicity, auto-void of the
+  loser's open items); a new, human-authored decision that supersedes BOTH
+  sides — forced long-term when either side is (FR-5.2a: a long-term decision
+  is superseded only by a long-term successor), and refused by the same tier
+  gate when the two sides straddle tiers, exactly as a direct cross-tier
+  `supersede()` would be; or acceptance of the conflict as a standing
+  `CONFLICTS_WITH` relationship (no status change on either side, a reason
+  required) — the FR-5.3 "meaning is resolved by the reader" stance applied to
+  conflicts that are real but not (yet) adjudicated. `apply_item` never
+  executes a conflict item.
 
 ### FR-6 Queries
 
@@ -231,9 +252,9 @@ Consumer → capability map (each row traceable to the FRs below):
   `Embedder` (text → vector), fulfilled by the embedding service (meridian via
   tradewind's light tier).
 - **FR-7.2** Engine assistance produces only pending queue items: relationship
-  suggestions (supersedes / supplements / unrelated, with rationale — conflict
-  detection remains v2 per §5) over similarity shortlists; promotion-candidate
-  sweeps over short-term `current` decisions. `source=engine:binnacle`, never
+  suggestions (supersedes / supplements / conflicts / unrelated, with
+  rationale) over similarity shortlists; promotion-candidate sweeps over
+  short-term `current` decisions. `source=engine:binnacle`, never
   auto-committed.
 - **FR-7.3** Deterministic mechanisms need neither LLM nor human: expiry by clock,
   registry validation, hybrid shortlisting, queue ordering, auto-archival.
@@ -320,8 +341,7 @@ Consumer → capability map (each row traceable to the FRs below):
   long-term decision, keeping the mistake visible.
 - **Notifications.** Alerting on queue items is the embedding service's concern
   (jobs/UI), not the library's.
-- **v2 candidates, named for later:** automated conflict detection across current
-  decisions (semantica's `conflicts` module); hierarchical scope registry
+- **v2 candidates, named for later:** hierarchical scope registry
   (company → department → team inheritance); `DecisionContext` snapshots
   (entity_snapshots / risk_factors) as structured attachments; decision extraction
   from transcripts; Markdown/ADR-file export rendering (JSON export is v1, FR-6.6);
