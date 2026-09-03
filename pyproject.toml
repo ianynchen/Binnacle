@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "binnacle"
+version = "0.1.0"
+description = "PostgreSQL-backed decision-record library."
+requires-python = ">=3.13"
+dependencies = [
+  "pydantic>=2.9",
+  "psycopg[binary,pool]==3.3.5",
+  "pgvector==0.5.0",
+  "yoyo-migrations==9.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "mypy",
+  "ruff",
+  "import-linter",
+  "pre-commit",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/binnacle"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.importlinter]
+root_package = "binnacle"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "layers"
+type = "layers"
+layers = ["binnacle.adapters", "binnacle.application", "binnacle.domain"]
+
+[[tool.importlinter.contracts]]
+name = "domain is pure"
+type = "forbidden"
+source_modules = ["binnacle.domain"]
+forbidden_modules = ["psycopg", "yoyo", "pgvector"]
+
+[[tool.importlinter.contracts]]
+name = "application is driver-free"
+type = "forbidden"
+source_modules = ["binnacle.application"]
+forbidden_modules = ["psycopg", "yoyo"]
