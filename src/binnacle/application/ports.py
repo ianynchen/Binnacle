@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, overload, runtime_checkable
 from uuid import UUID
 
 from binnacle.domain.models import (
@@ -293,6 +293,36 @@ class StorePort(Protocol):
         re-sort themselves)."""
         ...
 
+    @overload
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+        compact_chars: int = 200,
+    ) -> list[CompactDecision]: ...
+
+    @overload
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+        compact_chars: None,
+    ) -> list[Decision]: ...
+
     async def relevant(
         self,
         *,
@@ -317,7 +347,13 @@ class StorePort(Protocol):
 
         Projection: `compact_chars` an `int` returns `list[CompactDecision]` with
         `outcome` truncated to that length **in SQL** (no fetch-then-trim, FR-6.7);
-        `compact_chars=None` returns the full `list[Decision]`.
+        `compact_chars=None` returns the full `list[Decision]`. The two
+        `@overload`s above narrow the return type at each call site on a
+        literal/omitted vs. `None` `compact_chars`, so callers get
+        `list[CompactDecision]`/`list[Decision]` without a cast; this last
+        signature is the Protocol's structurally-checked one, and conforming
+        implementations (e.g. `PostgresStore.relevant`) carry the same
+        overload pair plus one real implementation.
         """
         ...
 

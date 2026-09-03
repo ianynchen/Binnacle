@@ -18,7 +18,7 @@ adapter-free.
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, overload
 from uuid import UUID
 
 from binnacle.adapters.postgres_store import PostgresStore
@@ -149,6 +149,35 @@ class Binnacle:
 
     # -- queries (FR-6) -----------------------------------------------------
 
+    @overload
+    async def relevant(
+        self,
+        domains: Sequence[str] | None = None,
+        subject: tuple[str, str] | None = None,
+        status: Sequence[str] = ("current",),
+        tier: Tier | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        projection: Literal["compact"] = "compact",
+        limit: int = 50,
+        include_archived: bool = False,
+    ) -> list[CompactDecision]: ...
+
+    @overload
+    async def relevant(
+        self,
+        domains: Sequence[str] | None = None,
+        subject: tuple[str, str] | None = None,
+        status: Sequence[str] = ("current",),
+        tier: Tier | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        *,
+        projection: Literal["full"],
+        limit: int = 50,
+        include_archived: bool = False,
+    ) -> list[Decision]: ...
+
     async def relevant(
         self,
         domains: Sequence[str] | None = None,
@@ -161,10 +190,36 @@ class Binnacle:
         limit: int = 50,
         include_archived: bool = False,
     ) -> "list[CompactDecision] | list[Decision]":
-        """FR-6.1 relevance query. `projection='compact'` truncates `outcome` to
-        `config.compact_outcome_chars` in SQL (FR-6.7); `'full'` returns the
-        untruncated `Decision`."""
-        compact_chars = self._config.compact_outcome_chars if projection == "compact" else None
+        """FR-6.1 relevance query. `projection='compact'` (default) truncates
+        `outcome` to `config.compact_outcome_chars` in SQL (FR-6.7) and returns
+        `list[CompactDecision]`; `'full'` returns the untruncated
+        `list[Decision]`. The two `@overload`s above narrow the return type at
+        each call site for a literal `projection` (the common case, since it
+        has a default); passing a non-literal `projection` value falls back to
+        this signature's `list[CompactDecision] | list[Decision]`.
+
+        Dispatches to one of two `self._store.relevant(...)` calls, each
+        passing a concrete `compact_chars` (an `int` literal or `None`)
+        rather than a `projection`-derived `int | None` variable -- mypy's
+        overload resolution re-checks every other `Optional` parameter's
+        union against both of `relevant`'s overloads when the *call site*
+        itself carries a union-typed argument, and with this many `Optional`
+        parameters that combinatorial check exceeds mypy's limit ("Not all
+        union combinations were tried"). Passing a literal per branch keeps
+        each call resolvable to exactly one overload.
+        """
+        if projection == "compact":
+            return await self._store.relevant(
+                domains=domains,
+                status=status,
+                tier=tier,
+                subject=subject,
+                as_of=as_of,
+                text=text,
+                include_archived=include_archived,
+                limit=limit,
+                compact_chars=self._config.compact_outcome_chars,
+            )
         return await self._store.relevant(
             domains=domains,
             status=status,
@@ -174,7 +229,7 @@ class Binnacle:
             text=text,
             include_archived=include_archived,
             limit=limit,
-            compact_chars=compact_chars,
+            compact_chars=None,
         )
 
     async def history(self, decision_id: UUID) -> HistoryRecord:

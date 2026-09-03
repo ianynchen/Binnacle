@@ -34,7 +34,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
@@ -736,6 +736,36 @@ class PostgresStore:
             )
             for r in rows
         ]
+
+    @overload
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+        compact_chars: int = 200,
+    ) -> list[CompactDecision]: ...
+
+    @overload
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+        compact_chars: None,
+    ) -> list[Decision]: ...
 
     async def relevant(
         self,
