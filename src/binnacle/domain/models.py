@@ -3,7 +3,7 @@
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
@@ -206,16 +206,22 @@ class CompactDecision:
 
 @dataclass(frozen=True)
 class Transition:
-    """A state transition in a decision's lifecycle."""
+    """A state transition in a decision's lifecycle.
 
-    transition_id: UUID
+    `reason`, `new_status`, and `payload` are all `None`-able: the schema columns
+    are nullable (ARCHITECTURE.md §4) and `apply_transition` legitimately persists
+    NULL for each — most commonly `new_status=None` on a `recommended` transition,
+    which never changes status.
+    """
+
+    transition_id: int
     decision_id: UUID
     action: TransitionAction
     actor: Actor
     at: datetime
-    reason: str
-    new_status: ShortStatus | LongStatus
-    payload: dict[str, Any]
+    reason: str | None
+    new_status: ShortStatus | LongStatus | None
+    payload: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -229,7 +235,14 @@ class Link:
 
 @dataclass(frozen=True)
 class QueueItem:
-    """An item in a promotion/linking queue."""
+    """An item in a promotion/linking queue.
+
+    `rationale` and `confidence` are `None`-able: the schema columns are nullable
+    (ARCHITECTURE.md §4) and `enqueue` accepts `None` for both — the `shakiest`
+    queue ordering (docs/components/04-query-and-assist.md) depends on this: it
+    falls back from item confidence to the decision's own confidence to 1.0 last,
+    which requires `None` to be representable at every step.
+    """
 
     item_id: int
     kind: QueueKind
@@ -237,8 +250,8 @@ class QueueItem:
     target_id: UUID | None
     proposed_by: Actor
     proposed_at: datetime
-    rationale: str
-    confidence: float
+    rationale: str | None
+    confidence: float | None
     resolved: bool
 
 
@@ -268,3 +281,59 @@ class PromotionAssessment:
     recommend: bool
     rationale: str
     confidence: float
+
+
+@dataclass(frozen=True)
+class DomainRecord:
+    """One row of the governed domain registry (FR-2)."""
+
+    name: str
+    description: str
+    active: bool
+
+
+@dataclass(frozen=True)
+class HistoryRecord:
+    """A decision's full record (FR-6.2): content and refs (on `decision`),
+    transitions in order, every link touching the decision, both supersession
+    chains (recursive over `links` kind SUPERSEDES), and supplements — decisions
+    that supplement this one (FR-5.3). Includes archived/discarded entries
+    throughout; history hides nothing.
+    """
+
+    decision: Decision
+    transitions: list[Transition]
+    links: list[Link]
+    predecessors: list[Decision]
+    successors: list[Decision]
+    supplements: list[Decision]
+
+
+@dataclass(frozen=True)
+class QueueItemView:
+    """One open queue item plus the fields its orderings need
+    (docs/components/04-query-and-assist.md `queue()`): the item itself (carrying
+    `proposed_by` as recommender, `rationale`, and its own `confidence`), the
+    subject decision's `domain` (the `domain` ordering), and the subject
+    decision's own `confidence` (the `shakiest` ordering's fallback when the item
+    carries none, itself falling back to 1.0, sorted last).
+    """
+
+    item: QueueItem
+    domain: str
+    decision_confidence: float | None
+    age: timedelta
+
+
+@dataclass(frozen=True)
+class ExportBundle:
+    """A filtered export (FR-6.6): decisions (each carrying its own refs), every
+    link and transition touching them, and the full domains registry. Embeddings
+    are deliberately excluded (derived, rebuildable).
+    """
+
+    schema_version: int
+    decisions: list[Decision]
+    links: list[Link]
+    transitions: list[Transition]
+    domains: list[DomainRecord]

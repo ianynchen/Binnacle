@@ -9,17 +9,23 @@ see psycopg types.
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from binnacle.domain.models import (
     Actor,
+    CompactDecision,
     Decision,
+    ExportBundle,
+    HistoryRecord,
     LinkKind,
     QueueItem,
+    QueueItemView,
     QueueKind,
     Ref,
     Tier,
+    Transition,
 )
 
 InsertOutcome = Literal["inserted", "exists_identical"]
@@ -176,4 +182,134 @@ class StorePort(Protocol):
 
     async def mark_discovered(self, tx: Tx, decision_ids: Sequence[UUID]) -> None:
         """Set `embeddings.discovered_at = now()` for each id (FR-7.4 discovery cursor)."""
+        ...
+
+    # -- reads -----------------------------------------------------------------
+    # Read-only: no `tx` required, a plain pooled connection suffices (no lock
+    # needed, nothing here mutates). See docs/components/02-store-and-migrations.md
+    # ("Reads") and docs/components/04-query-and-assist.md ("Query contracts").
+
+    async def get_decision(self, decision_id: UUID) -> Decision | None:
+        """Fetch one decision, hydrated with its refs and declared
+        supersedes/supplements (FR-6.8). `None` when `decision_id` doesn't exist."""
+        ...
+
+    async def get_many(self, ids: Sequence[UUID]) -> list[Decision]:
+        """Batch `get_decision` (FR-6.8). Ids with no matching row are simply absent."""
+        ...
+
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+        compact_chars: int | None = 200,
+    ) -> list[CompactDecision] | list[Decision]:
+        """FR-6.1: decisions matching `domains` (default all), `status` (default
+        `{"current"}`), `tier`, and `subject` — subject-ref match **or** unscoped
+        (no subject refs at all). `as_of` filters `valid_from`/`valid_until`
+        (default now, excluding decisions whose `valid_until` has passed). `text`
+        is an ILIKE substring filter over scenario/outcome/reasoning.
+        `include_archived` adds `"archived"` to the effective status set.
+
+        Ordered deterministically: recency (`recorded_at` descending), then id.
+
+        Projection: `compact_chars` an `int` returns `list[CompactDecision]` with
+        `outcome` truncated to that length **in SQL** (no fetch-then-trim, FR-6.7);
+        `compact_chars=None` returns the full `list[Decision]`.
+        """
+        ...
+
+    async def history(self, decision_id: UUID) -> HistoryRecord:
+        """FR-6.2: the decision's full record — content, refs, transitions (in
+        order), every link touching it, both supersession chains (recursive over
+        `links` kind SUPERSEDES), and its supplements. Includes archived/discarded
+        decisions throughout (history hides nothing).
+
+        Raises:
+            DecisionNotFound: no decision has `decision_id`.
+        """
+        ...
+
+    async def changes(
+        self,
+        since: datetime | None = None,
+        actions: Sequence[str] | None = None,
+        actor: Actor | None = None,
+    ) -> list[tuple[Transition, CompactDecision]]:
+        """FR-6.5: transitions filtered by window (`since`), `actions`, and
+        `actor`, each paired with its decision's compact projection. Most-recent
+        first."""
+        ...
+
+    async def open_queue(
+        self,
+        kinds: Sequence[str] | None = None,
+        order: Literal["oldest", "shakiest", "domain"] = "oldest",
+    ) -> list[QueueItemView]:
+        """FR-4.3/6.4: open (unresolved) queue items, optionally restricted to
+        `kinds`. `oldest` sorts by `proposed_at` ascending; `domain` by the
+        subject decision's domain; `shakiest` by confidence ascending — the
+        item's own `confidence`, else the subject decision's `confidence`, else
+        `1.0` (sorted last)."""
+        ...
+
+    async def by_source(self, source: str, **filters: Any) -> list[CompactDecision]:
+        """FR-6.8: a source system's own decisions (`decisions.source = source`),
+        with the standard `status`/`tier`/`limit`/`compact_chars` filters accepted
+        as keyword arguments.
+
+        Raises:
+            TypeError: an unrecognized filter keyword was supplied.
+        """
+        ...
+
+    async def knn(
+        self, vector: list[float], k: int, *, exclude_ids: Sequence[UUID] = ()
+    ) -> list[tuple[UUID, float]]:
+        """FR-6.3/6.9: the `k` nearest decisions to `vector` by pgvector cosine
+        distance (similarity = 1 - distance), joined to `decisions` to exclude
+        archived/discarded. Internally over-fetches `k * 4` rows before trimming
+        to `k`, so post-filtering never starves the result. `exclude_ids` removes
+        specific decisions (e.g. the query's own source) from consideration."""
+        ...
+
+    async def unembedded(self, limit: int) -> list[Decision]:
+        """FR-6.9: decisions with no `embeddings` row (the backfill backlog),
+        oldest-recorded first, capped at `limit`."""
+        ...
+
+    async def undiscovered(self, limit: int) -> list[UUID]:
+        """FR-7.4: embedded decisions with `discovered_at IS NULL` (the discovery
+        cursor), oldest-embedded first, capped at `limit`."""
+        ...
+
+    async def aging_unrecommended(self, older_than: datetime, limit: int) -> list[CompactDecision]:
+        """FR-6.9: short-term `current` decisions recorded before `older_than`
+        with no open `promote` queue item, oldest-recorded first, capped at
+        `limit`."""
+        ...
+
+    async def archival_eligible(self, cutoff: datetime) -> list[UUID]:
+        """FR-3.4: short-term `current`/`not_promoted` decisions recorded before
+        `cutoff` with no open queue item referencing them (as either the item's
+        decision or its target) — an open item stops the archival clock."""
+        ...
+
+    async def export_rows(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        status: Sequence[str] | None = None,
+    ) -> ExportBundle:
+        """FR-6.6: decisions matching the filters (each carrying its own refs),
+        every link and transition touching them, and the full domains registry.
+        Embeddings are deliberately excluded (derived, rebuildable)."""
         ...

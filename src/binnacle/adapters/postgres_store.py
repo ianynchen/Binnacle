@@ -28,10 +28,12 @@ tests/db/test_migrations.py, not only through `migrate()`):
 
 import asyncio
 import tempfile
+from collections import defaultdict
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
@@ -46,12 +48,29 @@ from yoyo import get_backend, read_migrations
 from binnacle.application.ports import DecisionRow, InsertOutcome, StorePort, Tx
 from binnacle.domain.errors import (
     ConfigError,
+    DecisionNotFound,
     EmbeddingDimensionMismatch,
     IdempotencyConflict,
     ItemAlreadyResolved,
     ItemNotFound,
 )
-from binnacle.domain.models import Actor, Decision, LinkKind, QueueItem, QueueKind, Ref
+from binnacle.domain.models import (
+    Actor,
+    CompactDecision,
+    Decision,
+    DomainRecord,
+    ExportBundle,
+    HistoryRecord,
+    Link,
+    LinkKind,
+    OptionConsidered,
+    QueueItem,
+    QueueItemView,
+    QueueKind,
+    Ref,
+    Tier,
+    Transition,
+)
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
@@ -59,6 +78,17 @@ _QUEUE_DEDUP_TARGET = (
     "(kind, decision_id, COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid))"
     " WHERE NOT resolved"
 )
+
+# FR-6.7 default compact-projection truncation length.
+_DEFAULT_COMPACT_CHARS = 200
+
+# FR-6.1 default relevance status set — "current" only, unless widened by an
+# explicit `status` filter or `include_archived`.
+_DEFAULT_RELEVANT_STATUS = frozenset({"current"})
+
+# FR-6.6 export document schema version (the bundle's own JSON shape, distinct
+# from `decisions.schema_version`).
+_EXPORT_SCHEMA_VERSION = 1
 
 
 class _PgTx(Tx):
@@ -106,6 +136,50 @@ def _row_to_queue_item(row: dict[str, Any]) -> QueueItem:
         rationale=row["rationale"],
         confidence=row["confidence"],
         resolved=row["resolved"],
+    )
+
+
+def _row_to_transition(row: dict[str, Any]) -> Transition:
+    return Transition(
+        transition_id=row["transition_id"],
+        decision_id=row["decision_id"],
+        action=row["action"],
+        actor=Actor.from_str(row["actor"]),
+        at=row["at"],
+        reason=row["reason"],
+        new_status=row["new_status"],
+        payload=row["payload"],
+    )
+
+
+def _row_to_decision(
+    row: dict[str, Any], refs: list[Ref], links: list[tuple[UUID, str]]
+) -> Decision:
+    return Decision(
+        decision_id=row["decision_id"],
+        domain=row["domain"],
+        tier=row["tier"],
+        status=row["status"],
+        scenario=row["scenario"],
+        outcome=row["outcome"],
+        reasoning=row["reasoning"],
+        source=row["source"],
+        recorded_by=Actor.from_str(row["recorded_by"]),
+        recorded_at=row["recorded_at"],
+        decided_at=row["decided_at"],
+        options_considered=[
+            OptionConsidered(option=o["option"], why_rejected=o["why_rejected"])
+            for o in row["options_considered"]
+        ],
+        consequences=row["consequences"],
+        confidence=row["confidence"],
+        valid_from=row["valid_from"],
+        valid_until=row["valid_until"],
+        refs=refs,
+        supersedes=[to_id for to_id, kind in links if kind == "SUPERSEDES"],
+        supplements=[to_id for to_id, kind in links if kind == "SUPPLEMENTS"],
+        metadata=row["metadata"],
+        schema_version=row["schema_version"],
     )
 
 
@@ -219,6 +293,17 @@ class PostgresStore:
         pool = await self._ensure_pool()
         async with pool.connection() as conn, conn.transaction():
             yield _PgTx(conn)
+
+    @asynccontextmanager
+    async def _read_conn(self) -> AsyncIterator["psycopg.AsyncConnection[Any]"]:
+        """A plain pooled connection for one read (no transaction/lock needed —
+        the reads in this module never mutate). Declared `AsyncConnection[Any]`
+        (matching `_conn`'s cast for writes) since `AsyncConnectionPool` isn't
+        parameterized with the pool's actual `dict_row` row factory (set at
+        runtime via `kwargs`, invisible to the type checker)."""
+        pool = await self._ensure_pool()
+        async with pool.connection() as conn:
+            yield conn
 
     # -- write primitives -----------------------------------------------------------
 
@@ -441,6 +526,541 @@ class PostgresStore:
             f"UPDATE {self._schema}.embeddings SET discovered_at = now() "
             "WHERE decision_id = ANY(%s)",
             (list(decision_ids),),
+        )
+
+    # -- reads -----------------------------------------------------------------
+    # Read-only: a plain pooled connection is enough, no transaction/lock needed.
+
+    async def _hydrate_decisions(
+        self, conn: "psycopg.AsyncConnection[Any]", rows: Sequence[dict[str, Any]]
+    ) -> list[Decision]:
+        """Batch-attach refs and declared supersedes/supplements links to `rows`
+        (each a full `decisions` row), preserving `rows`' order."""
+        if not rows:
+            return []
+        ids = [r["decision_id"] for r in rows]
+        refs_by_id: dict[UUID, list[Ref]] = defaultdict(list)
+        cur = await conn.execute(
+            f"SELECT decision_id, role, kind, identifier, note FROM {self._schema}.refs "
+            "WHERE decision_id = ANY(%s)",
+            (ids,),
+        )
+        async for r in cur:
+            refs_by_id[r["decision_id"]].append(
+                Ref(role=r["role"], kind=r["kind"], identifier=r["identifier"], note=r["note"])
+            )
+        links_by_id: dict[UUID, list[tuple[UUID, str]]] = defaultdict(list)
+        cur = await conn.execute(
+            f"SELECT from_id, to_id, kind FROM {self._schema}.links "
+            "WHERE from_id = ANY(%s) AND kind IN ('SUPERSEDES', 'SUPPLEMENTS')",
+            (ids,),
+        )
+        async for r in cur:
+            links_by_id[r["from_id"]].append((r["to_id"], r["kind"]))
+        return [
+            _row_to_decision(
+                r, refs_by_id.get(r["decision_id"], []), links_by_id.get(r["decision_id"], [])
+            )
+            for r in rows
+        ]
+
+    async def _decisions_by_id_ordered(
+        self, conn: "psycopg.AsyncConnection[Any]", ids: list[UUID]
+    ) -> list[Decision]:
+        """`get_many`, but preserving `ids`' order (for the supersession chains,
+        where order is nearest-to-farthest, not incidental)."""
+        if not ids:
+            return []
+        cur = await conn.execute(
+            f"SELECT * FROM {self._schema}.decisions WHERE decision_id = ANY(%s)", (ids,)
+        )
+        rows_by_id = {r["decision_id"]: r async for r in cur}
+        ordered_rows = [rows_by_id[i] for i in ids if i in rows_by_id]
+        return await self._hydrate_decisions(conn, ordered_rows)
+
+    async def _fetch_subject_refs(
+        self, conn: "psycopg.AsyncConnection[Any]", ids: Sequence[UUID]
+    ) -> dict[UUID, list[Ref]]:
+        refs_by_id: dict[UUID, list[Ref]] = defaultdict(list)
+        if not ids:
+            return refs_by_id
+        cur = await conn.execute(
+            f"SELECT decision_id, kind, identifier, note FROM {self._schema}.refs "
+            "WHERE decision_id = ANY(%s) AND role = 'subject'",
+            (list(ids),),
+        )
+        async for r in cur:
+            refs_by_id[r["decision_id"]].append(
+                Ref(role="subject", kind=r["kind"], identifier=r["identifier"], note=r["note"])
+            )
+        return refs_by_id
+
+    async def get_decision(self, decision_id: UUID) -> Decision | None:
+        async with self._read_conn() as conn:
+            cur = await conn.execute(
+                f"SELECT * FROM {self._schema}.decisions WHERE decision_id = %s", (decision_id,)
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            decisions = await self._hydrate_decisions(conn, [row])
+        return decisions[0]
+
+    async def get_many(self, ids: Sequence[UUID]) -> list[Decision]:
+        if not ids:
+            return []
+        async with self._read_conn() as conn:
+            cur = await conn.execute(
+                f"SELECT * FROM {self._schema}.decisions WHERE decision_id = ANY(%s) "
+                "ORDER BY decision_id",
+                (list(ids),),
+            )
+            rows = await cur.fetchall()
+            return await self._hydrate_decisions(conn, rows)
+
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+        compact_chars: int | None = 200,
+    ) -> "list[CompactDecision] | list[Decision]":
+        schema = self._schema
+        statuses = set(status) if status is not None else set(_DEFAULT_RELEVANT_STATUS)
+        if include_archived:
+            statuses.add("archived")
+        effective_as_of = as_of if as_of is not None else datetime.now(UTC)
+
+        conditions = ["d.status = ANY(%(statuses)s)"]
+        params: dict[str, Any] = {
+            "statuses": list(statuses),
+            "as_of": effective_as_of,
+            "limit": limit,
+        }
+        conditions.append("(d.valid_from IS NULL OR d.valid_from <= %(as_of)s)")
+        conditions.append("(d.valid_until IS NULL OR d.valid_until > %(as_of)s)")
+        if domains is not None:
+            conditions.append("d.domain = ANY(%(domains)s)")
+            params["domains"] = list(domains)
+        if tier is not None:
+            conditions.append("d.tier = %(tier)s")
+            params["tier"] = tier
+        if subject is not None:
+            subj_kind, subj_id = subject
+            conditions.append(
+                f"(EXISTS (SELECT 1 FROM {schema}.refs r WHERE r.decision_id = d.decision_id "
+                "AND r.role = 'subject' AND r.kind = %(subj_kind)s AND r.identifier = %(subj_id)s) "
+                f"OR NOT EXISTS (SELECT 1 FROM {schema}.refs r2 "
+                "WHERE r2.decision_id = d.decision_id AND r2.role = 'subject'))"
+            )
+            params["subj_kind"] = subj_kind
+            params["subj_id"] = subj_id
+        if text is not None:
+            conditions.append(
+                "(d.scenario ILIKE %(text)s OR d.outcome ILIKE %(text)s OR d.reasoning ILIKE %(text)s)"
+            )
+            params["text"] = f"%{text}%"
+        where_sql = " AND ".join(conditions)
+
+        if compact_chars is not None:
+            params["compact_chars"] = compact_chars
+            sql = (
+                f"SELECT d.decision_id, d.domain, d.tier, d.status, "
+                f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
+                f"FROM {schema}.decisions d WHERE {where_sql} "
+                "ORDER BY d.recorded_at DESC, d.decision_id ASC LIMIT %(limit)s"
+            )
+            async with self._read_conn() as conn:
+                cur = await conn.execute(sql, params)
+                rows = await cur.fetchall()
+                subject_refs_by_id = await self._fetch_subject_refs(
+                    conn, [r["decision_id"] for r in rows]
+                )
+            return [
+                CompactDecision(
+                    id=r["decision_id"],
+                    domain=r["domain"],
+                    tier=r["tier"],
+                    status=r["status"],
+                    outcome_truncated=r["outcome_truncated"],
+                    subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                )
+                for r in rows
+            ]
+
+        sql = (
+            f"SELECT d.* FROM {schema}.decisions d WHERE {where_sql} "
+            "ORDER BY d.recorded_at DESC, d.decision_id ASC LIMIT %(limit)s"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            return await self._hydrate_decisions(conn, rows)
+
+    async def history(self, decision_id: UUID) -> HistoryRecord:
+        schema = self._schema
+        async with self._read_conn() as conn:
+            cur = await conn.execute(
+                f"SELECT * FROM {schema}.decisions WHERE decision_id = %s", (decision_id,)
+            )
+            row = await cur.fetchone()
+            if row is None:
+                msg = f"decision {decision_id} not found"
+                raise DecisionNotFound(msg)
+            decision = (await self._hydrate_decisions(conn, [row]))[0]
+
+            cur = await conn.execute(
+                f"SELECT * FROM {schema}.transitions WHERE decision_id = %s "
+                "ORDER BY at ASC, transition_id ASC",
+                (decision_id,),
+            )
+            transitions = [_row_to_transition(r) async for r in cur]
+
+            cur = await conn.execute(
+                f"SELECT from_id, to_id, kind FROM {schema}.links WHERE from_id = %s OR to_id = %s",
+                (decision_id, decision_id),
+            )
+            links = [
+                Link(from_id=r["from_id"], to_id=r["to_id"], kind=r["kind"]) async for r in cur
+            ]
+
+            cur = await conn.execute(
+                f"WITH RECURSIVE pred AS ("
+                f"  SELECT to_id AS decision_id, 1 AS depth FROM {schema}.links "
+                "   WHERE from_id = %(id)s AND kind = 'SUPERSEDES'"
+                "  UNION ALL"
+                f"  SELECT l.to_id, p.depth + 1 FROM {schema}.links l "
+                "   JOIN pred p ON l.from_id = p.decision_id WHERE l.kind = 'SUPERSEDES'"
+                ") SELECT decision_id FROM pred ORDER BY depth",
+                {"id": decision_id},
+            )
+            predecessor_ids = [r["decision_id"] async for r in cur]
+
+            cur = await conn.execute(
+                f"WITH RECURSIVE succ AS ("
+                f"  SELECT from_id AS decision_id, 1 AS depth FROM {schema}.links "
+                "   WHERE to_id = %(id)s AND kind = 'SUPERSEDES'"
+                "  UNION ALL"
+                f"  SELECT l.from_id, s.depth + 1 FROM {schema}.links l "
+                "   JOIN succ s ON l.to_id = s.decision_id WHERE l.kind = 'SUPERSEDES'"
+                ") SELECT decision_id FROM succ ORDER BY depth",
+                {"id": decision_id},
+            )
+            successor_ids = [r["decision_id"] async for r in cur]
+
+            cur = await conn.execute(
+                f"SELECT from_id FROM {schema}.links WHERE to_id = %s AND kind = 'SUPPLEMENTS'",
+                (decision_id,),
+            )
+            supplement_ids = [r["from_id"] async for r in cur]
+
+            predecessors = await self._decisions_by_id_ordered(conn, predecessor_ids)
+            successors = await self._decisions_by_id_ordered(conn, successor_ids)
+            supplements = await self._decisions_by_id_ordered(conn, supplement_ids)
+
+        return HistoryRecord(
+            decision=decision,
+            transitions=transitions,
+            links=links,
+            predecessors=predecessors,
+            successors=successors,
+            supplements=supplements,
+        )
+
+    async def changes(
+        self,
+        since: datetime | None = None,
+        actions: Sequence[str] | None = None,
+        actor: Actor | None = None,
+    ) -> list[tuple[Transition, CompactDecision]]:
+        schema = self._schema
+        conditions = []
+        params: dict[str, Any] = {"compact_chars": _DEFAULT_COMPACT_CHARS}
+        if since is not None:
+            conditions.append("t.at >= %(since)s")
+            params["since"] = since
+        if actions is not None:
+            conditions.append("t.action = ANY(%(actions)s)")
+            params["actions"] = list(actions)
+        if actor is not None:
+            conditions.append("t.actor = %(actor)s")
+            params["actor"] = actor.as_str()
+        where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = (
+            "SELECT t.*, d.domain AS d_domain, d.tier AS d_tier, d.status AS d_status, "
+            f"LEFT(d.outcome, %(compact_chars)s) AS d_outcome_truncated "
+            f"FROM {schema}.transitions t JOIN {schema}.decisions d ON d.decision_id = t.decision_id"
+            f"{where_sql} ORDER BY t.at DESC, t.transition_id DESC"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            subject_refs_by_id = await self._fetch_subject_refs(
+                conn, [r["decision_id"] for r in rows]
+            )
+        return [
+            (
+                _row_to_transition(r),
+                CompactDecision(
+                    id=r["decision_id"],
+                    domain=r["d_domain"],
+                    tier=r["d_tier"],
+                    status=r["d_status"],
+                    outcome_truncated=r["d_outcome_truncated"],
+                    subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                ),
+            )
+            for r in rows
+        ]
+
+    async def open_queue(
+        self,
+        kinds: Sequence[str] | None = None,
+        order: Literal["oldest", "shakiest", "domain"] = "oldest",
+    ) -> list[QueueItemView]:
+        schema = self._schema
+        conditions = ["NOT q.resolved"]
+        params: dict[str, Any] = {}
+        if kinds is not None:
+            conditions.append("q.kind = ANY(%(kinds)s)")
+            params["kinds"] = list(kinds)
+        order_sql = {
+            "oldest": "q.proposed_at ASC, q.item_id ASC",
+            # Ascending confidence: the fallback chain's ceiling (1.0, "absent")
+            # naturally sorts last since confidence never exceeds 1.0.
+            "shakiest": "COALESCE(q.confidence, d.confidence, 1.0) ASC, q.proposed_at ASC, q.item_id ASC",
+            "domain": "d.domain ASC, q.proposed_at ASC, q.item_id ASC",
+        }[order]
+        sql = (
+            "SELECT q.*, d.domain AS d_domain, d.confidence AS d_confidence "
+            f"FROM {schema}.queue q JOIN {schema}.decisions d ON d.decision_id = q.decision_id "
+            f"WHERE {' AND '.join(conditions)} ORDER BY {order_sql}"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+        now = datetime.now(UTC)
+        return [
+            QueueItemView(
+                item=_row_to_queue_item(r),
+                domain=r["d_domain"],
+                decision_confidence=r["d_confidence"],
+                age=now - r["proposed_at"],
+            )
+            for r in rows
+        ]
+
+    async def by_source(self, source: str, **filters: Any) -> list[CompactDecision]:
+        status = filters.pop("status", None)
+        tier = filters.pop("tier", None)
+        limit = filters.pop("limit", 50)
+        compact_chars = filters.pop("compact_chars", _DEFAULT_COMPACT_CHARS)
+        if filters:
+            msg = f"by_source() received unknown filters: {sorted(filters)}"
+            raise TypeError(msg)
+
+        schema = self._schema
+        conditions = ["d.source = %(source)s"]
+        params: dict[str, Any] = {
+            "source": source,
+            "compact_chars": compact_chars,
+            "limit": limit,
+        }
+        if status is not None:
+            conditions.append("d.status = ANY(%(status)s)")
+            params["status"] = list(status)
+        if tier is not None:
+            conditions.append("d.tier = %(tier)s")
+            params["tier"] = tier
+        sql = (
+            f"SELECT d.decision_id, d.domain, d.tier, d.status, "
+            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
+            f"FROM {schema}.decisions d WHERE {' AND '.join(conditions)} "
+            "ORDER BY d.recorded_at DESC, d.decision_id ASC LIMIT %(limit)s"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            subject_refs_by_id = await self._fetch_subject_refs(
+                conn, [r["decision_id"] for r in rows]
+            )
+        return [
+            CompactDecision(
+                id=r["decision_id"],
+                domain=r["domain"],
+                tier=r["tier"],
+                status=r["status"],
+                outcome_truncated=r["outcome_truncated"],
+                subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+            )
+            for r in rows
+        ]
+
+    async def knn(
+        self, vector: list[float], k: int, *, exclude_ids: Sequence[UUID] = ()
+    ) -> list[tuple[UUID, float]]:
+        schema = self._schema
+        conditions = ["d.status NOT IN ('archived', 'discarded')"]
+        params: dict[str, Any] = {"vector": Vector(vector), "limit": k * 4}
+        if exclude_ids:
+            conditions.append("e.decision_id != ALL(%(exclude_ids)s)")
+            params["exclude_ids"] = list(exclude_ids)
+        sql = (
+            "SELECT e.decision_id, e.embedding <=> %(vector)s AS distance "
+            f"FROM {schema}.embeddings e JOIN {schema}.decisions d ON d.decision_id = e.decision_id "
+            f"WHERE {' AND '.join(conditions)} "
+            "ORDER BY e.embedding <=> %(vector)s LIMIT %(limit)s"
+        )
+        async with self._read_conn() as conn:
+            await register_vector_async(conn)
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+        results = [(r["decision_id"], 1.0 - r["distance"]) for r in rows]
+        return results[:k]
+
+    async def unembedded(self, limit: int) -> list[Decision]:
+        schema = self._schema
+        sql = (
+            f"SELECT d.* FROM {schema}.decisions d "
+            f"LEFT JOIN {schema}.embeddings e ON e.decision_id = d.decision_id "
+            "WHERE e.decision_id IS NULL "
+            "ORDER BY d.recorded_at ASC, d.decision_id ASC LIMIT %s"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, (limit,))
+            rows = await cur.fetchall()
+            return await self._hydrate_decisions(conn, rows)
+
+    async def undiscovered(self, limit: int) -> list[UUID]:
+        schema = self._schema
+        sql = (
+            f"SELECT decision_id FROM {schema}.embeddings "
+            "WHERE discovered_at IS NULL ORDER BY embedded_at ASC LIMIT %s"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, (limit,))
+            rows = await cur.fetchall()
+        return [r["decision_id"] for r in rows]
+
+    async def aging_unrecommended(self, older_than: datetime, limit: int) -> list[CompactDecision]:
+        schema = self._schema
+        sql = (
+            f"SELECT d.decision_id, d.domain, d.tier, d.status, "
+            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
+            f"FROM {schema}.decisions d "
+            "WHERE d.tier = 'short_term' AND d.status = 'current' "
+            "AND d.recorded_at < %(older_than)s "
+            f"AND NOT EXISTS (SELECT 1 FROM {schema}.queue q WHERE q.kind = 'promote' "
+            "AND q.decision_id = d.decision_id AND NOT q.resolved) "
+            "ORDER BY d.recorded_at ASC, d.decision_id ASC LIMIT %(limit)s"
+        )
+        params = {
+            "older_than": older_than,
+            "limit": limit,
+            "compact_chars": _DEFAULT_COMPACT_CHARS,
+        }
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            subject_refs_by_id = await self._fetch_subject_refs(
+                conn, [r["decision_id"] for r in rows]
+            )
+        return [
+            CompactDecision(
+                id=r["decision_id"],
+                domain=r["domain"],
+                tier=r["tier"],
+                status=r["status"],
+                outcome_truncated=r["outcome_truncated"],
+                subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+            )
+            for r in rows
+        ]
+
+    async def archival_eligible(self, cutoff: datetime) -> list[UUID]:
+        schema = self._schema
+        sql = (
+            f"SELECT d.decision_id FROM {schema}.decisions d "
+            "WHERE d.tier = 'short_term' AND d.status IN ('current', 'not_promoted') "
+            "AND d.recorded_at < %(cutoff)s "
+            f"AND NOT EXISTS (SELECT 1 FROM {schema}.queue q WHERE NOT q.resolved "
+            "AND (q.decision_id = d.decision_id OR q.target_id = d.decision_id)) "
+            "ORDER BY d.recorded_at ASC, d.decision_id ASC"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, {"cutoff": cutoff})
+            rows = await cur.fetchall()
+        return [r["decision_id"] for r in rows]
+
+    async def export_rows(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        status: Sequence[str] | None = None,
+    ) -> ExportBundle:
+        schema = self._schema
+        conditions = []
+        params: dict[str, Any] = {}
+        if domains is not None:
+            conditions.append("d.domain = ANY(%(domains)s)")
+            params["domains"] = list(domains)
+        if tier is not None:
+            conditions.append("d.tier = %(tier)s")
+            params["tier"] = tier
+        if status is not None:
+            conditions.append("d.status = ANY(%(status)s)")
+            params["status"] = list(status)
+        where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = f"SELECT d.* FROM {schema}.decisions d{where_sql} ORDER BY d.decision_id"
+
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            decision_rows = await cur.fetchall()
+            decisions = await self._hydrate_decisions(conn, decision_rows)
+            ids = [r["decision_id"] for r in decision_rows]
+
+            links: list[Link] = []
+            if ids:
+                cur = await conn.execute(
+                    f"SELECT from_id, to_id, kind FROM {schema}.links "
+                    "WHERE from_id = ANY(%s) OR to_id = ANY(%s)",
+                    (ids, ids),
+                )
+                links = [
+                    Link(from_id=r["from_id"], to_id=r["to_id"], kind=r["kind"]) async for r in cur
+                ]
+
+            transitions: list[Transition] = []
+            if ids:
+                cur = await conn.execute(
+                    f"SELECT * FROM {schema}.transitions WHERE decision_id = ANY(%s) "
+                    "ORDER BY at ASC, transition_id ASC",
+                    (ids,),
+                )
+                transitions = [_row_to_transition(r) async for r in cur]
+
+            cur = await conn.execute(
+                f"SELECT name, description, active FROM {schema}.domains ORDER BY name"
+            )
+            domain_rows = await cur.fetchall()
+            domain_records = [
+                DomainRecord(name=r["name"], description=r["description"], active=r["active"])
+                for r in domain_rows
+            ]
+
+        return ExportBundle(
+            schema_version=_EXPORT_SCHEMA_VERSION,
+            decisions=decisions,
+            links=links,
+            transitions=transitions,
+            domains=domain_records,
         )
 
 

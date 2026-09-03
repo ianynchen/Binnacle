@@ -561,10 +561,11 @@ class TestTransition:
     """Test Transition dataclass."""
 
     def test_transition_creation(self) -> None:
-        """Transition has required fields."""
+        """Transition has required fields. `transition_id` is `int` (schema:
+        BIGSERIAL, not UUID)."""
         now = datetime.now(UTC)
         decision_id = uuid4()
-        transition_id = uuid4()
+        transition_id = 42
         actor = Actor(kind="human", id="alice")
         transition = Transition(
             transition_id=transition_id,
@@ -584,6 +585,25 @@ class TestTransition:
         assert transition.reason == "Initial recording"
         assert transition.new_status == "current"
         assert transition.payload == {}
+
+    def test_transition_reason_new_status_payload_are_nullable(self) -> None:
+        """`reason`, `new_status`, and `payload` are all `None`-able: the schema
+        columns are nullable, and `apply_transition` legitimately persists NULL for
+        each — most commonly `new_status=None` on a `recommended` transition, which
+        never changes status."""
+        transition = Transition(
+            transition_id=1,
+            decision_id=uuid4(),
+            action="recommended",
+            actor=Actor(kind="agent", id="meridian/s1"),
+            at=datetime.now(UTC),
+            reason=None,
+            new_status=None,
+            payload=None,
+        )
+        assert transition.reason is None
+        assert transition.new_status is None
+        assert transition.payload is None
 
 
 class TestLink:
@@ -629,6 +649,25 @@ class TestQueueItem:
         assert item.rationale == "Ready for production"
         assert item.confidence == 0.9
         assert item.resolved is False
+
+    def test_queue_item_rationale_and_confidence_are_nullable(self) -> None:
+        """`rationale` and `confidence` are `None`-able: the schema columns are
+        nullable and `enqueue` accepts `None` for both — the `shakiest` queue
+        ordering falls back from item confidence to the decision's own confidence
+        to 1.0 last, which requires `None` to be representable at every step."""
+        item = QueueItem(
+            item_id=1,
+            kind="promote",
+            decision_id=uuid4(),
+            target_id=None,
+            proposed_by=Actor(kind="engine", id="binnacle"),
+            proposed_at=datetime.now(UTC),
+            rationale=None,
+            confidence=None,
+            resolved=False,
+        )
+        assert item.rationale is None
+        assert item.confidence is None
 
 
 class TestSuggestion:
@@ -713,7 +752,7 @@ class TestFrozenImmutability:
             ),
             (
                 Transition(
-                    transition_id=uuid4(),
+                    transition_id=1,
                     decision_id=uuid4(),
                     action="recorded",
                     actor=Actor(kind="human", id="alice"),
@@ -790,7 +829,7 @@ class TestAstdictRecursion:
         now = datetime.now(UTC)
         actor = Actor(kind="human", id="alice")
         transition = Transition(
-            transition_id=uuid4(),
+            transition_id=1,
             decision_id=uuid4(),
             action="recorded",
             actor=actor,
