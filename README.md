@@ -647,8 +647,11 @@ field). There is currently no corresponding `import` — see
 
 ## Error handling
 
-Every error binnacle raises is a typed subclass of `BinnacleError`, so
-callers can branch on kind rather than parsing messages:
+Every domain-level failure raises a typed subclass of `BinnacleError`, so
+callers can branch on kind rather than parsing messages. (Plain argument
+misuse — an empty `promote_refined` source list, a malformed `Actor` kind,
+an out-of-range confidence, an unknown `by_source()` filter — raises the
+stdlib `ValueError`/`TypeError` you'd expect from any Python library.)
 
 ```python
 from binnacle import BinnacleError, IdempotencyConflict, InactiveDomain, UnknownDomain
@@ -762,12 +765,6 @@ named adoption triggers:
   re-derives a subject decision's vector by re-embedding its text for its
   own k-NN lookup, rather than reading the vector already stored by
   `backfill_embeddings()` (`src/binnacle/application/discovery.py`).
-- **Reversed-pair suggestions on equal `recorded_at`.** Discovery's temporal
-  filter allows `other.recorded_at <= subject.recorded_at`; when two
-  decisions share the exact same `recorded_at`, each can appear as the
-  other's "later" side during its own discovery pass, potentially enqueuing
-  the relationship suggestion in both directions (the dedup index keys on
-  `(kind, decision_id, target_id)`, which does not catch a reversed pair).
 - **No relationship taxonomy beyond
   supersedes/supplements/conflicts/unrelated.** A richer taxonomy (e.g.
   distinguishing *why* two decisions conflict) is not part of v1.
