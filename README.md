@@ -474,7 +474,7 @@ out-rank durable policy directly. Both of the latter raise
 short-term decision has into long-term change:
 
 ```python
-from binnacle.domain.errors import InvalidResolution
+from binnacle import InvalidResolution
 
 # each resolve_conflict call fully resolves its item -- these are two
 # separate conflicts, not two attempts at the same one
@@ -677,11 +677,8 @@ except BinnacleError:
 | `ItemNotFound` / `ItemAlreadyResolved` | A queue-item id that doesn't exist, or was already resolved by a concurrent call. |
 | `InvalidResolution` | `resolve_conflict()`'s argument combination is malformed, or names an unsupported mixed-tier path — see [Conflicts](#conflicts). |
 
-`InvalidResolution` is defined alongside the rest of the hierarchy in
-`binnacle.domain.errors` but is not re-exported from the top-level
-`binnacle` package today — import it from `binnacle.domain.errors` directly,
-as in [Conflicts](#conflicts), or catch `BinnacleError` if you don't need to
-distinguish it.
+Every error above, `InvalidResolution` included, is importable from the
+top-level `binnacle` package.
 
 ## Development
 
