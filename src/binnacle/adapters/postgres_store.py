@@ -649,6 +649,17 @@ class PostgresStore:
             )
         return refs_by_id
 
+    async def list_domains(self) -> list[DomainRecord]:
+        async with self._read_conn() as conn:
+            cur = await conn.execute(
+                f"SELECT name, description, active FROM {self._schema}.domains ORDER BY name"
+            )
+            rows = await cur.fetchall()
+        return [
+            DomainRecord(name=r["name"], description=r["description"], active=r["active"])
+            for r in rows
+        ]
+
     async def get_decision(self, decision_id: UUID) -> Decision | None:
         async with self._read_conn() as conn:
             cur = await conn.execute(
@@ -1104,14 +1115,7 @@ class PostgresStore:
                 )
                 transitions = [_row_to_transition(r) async for r in cur]
 
-            cur = await conn.execute(
-                f"SELECT name, description, active FROM {schema}.domains ORDER BY name"
-            )
-            domain_rows = await cur.fetchall()
-            domain_records = [
-                DomainRecord(name=r["name"], description=r["description"], active=r["active"])
-                for r in domain_rows
-            ]
+        domain_records = await self.list_domains()
 
         return ExportBundle(
             schema_version=_EXPORT_SCHEMA_VERSION,

@@ -10,25 +10,64 @@ from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from binnacle.domain.models import (
     Actor,
+    CandidatePair,
     CompactDecision,
     Decision,
+    DomainRecord,
     ExportBundle,
     HistoryRecord,
     LinkKind,
+    PromotionAssessment,
     QueueItem,
     QueueItemView,
     QueueKind,
     Ref,
+    Suggestion,
     Tier,
     Transition,
 )
 
 InsertOutcome = Literal["inserted", "exists_identical"]
+
+
+@runtime_checkable
+class Suggester(Protocol):
+    """ARCHITECTURE §3.1: the LLM-backed classification port (FR-7.1) — binnacle
+    core never constructs an LLM client itself, only calls through this port.
+    Meridian fulfills it via tradewind's light tier; tests use a scripted stub.
+
+    `@runtime_checkable` so `BinnacleConfig` (pydantic, `arbitrary_types_allowed`)
+    can validate a supplied port with `isinstance` — structural (method names
+    only), not signature-checked, same limitation `runtime_checkable` always has.
+    """
+
+    async def classify_pairs(self, pairs: list[CandidatePair]) -> list[Suggestion]:
+        """Classify each candidate pair as `supersedes` / `supplements` /
+        `unrelated`, with a rationale and confidence (FR-7.2/7.4)."""
+        ...
+
+    async def assess_promotion(self, decisions: list[CompactDecision]) -> list[PromotionAssessment]:
+        """Assess whether each aging short-term decision is ready to recommend
+        for promotion (FR-7.2's promotion-candidate sweep)."""
+        ...
+
+
+@runtime_checkable
+class Embedder(Protocol):
+    """ARCHITECTURE §3.1: the embedding port (FR-7.1). Meridian fulfills it via
+    nomic-embed-text-v1.5 (OQ-3); tests use a deterministic stub.
+
+    `@runtime_checkable` for the same pydantic-validation reason as `Suggester`.
+    """
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed each of `texts`, preserving order and length."""
+        ...
 
 
 class Tx:
@@ -218,6 +257,13 @@ class StorePort(Protocol):
     # Read-only: no `tx` required, a plain pooled connection suffices (no lock
     # needed, nothing here mutates). See docs/components/02-store-and-migrations.md
     # ("Reads") and docs/components/04-query-and-assist.md ("Query contracts").
+
+    async def list_domains(self) -> list[DomainRecord]:
+        """FR-2: every registered domain, name-ordered — the read side of
+        `upsert_domain`, the same projection `export_rows` already bundles into
+        `ExportBundle.domains`, exposed standalone for the client's registry
+        query (`Binnacle.domains()`)."""
+        ...
 
     async def get_decision(self, decision_id: UUID) -> Decision | None:
         """Fetch one decision, hydrated with its refs and declared
