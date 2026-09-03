@@ -64,10 +64,16 @@ class LifecycleEngine:
         `queue(kind='supersede')` claim — only a promoting human can execute a
         long-term mutation (I-2), so the claim waits for the gate.
 
+        A declared `supplements` target (FR-1.4) is handled the same way,
+        symmetrically: short-term links inline (no status change, FR-5.3);
+        long-term files a pending `queue(kind='link')` suggestion for a human
+        to execute later via `apply_item`.
+
         Raises:
             UnknownDomain: `nd.domain` is not registered.
             IdempotencyConflict: `nd.decision_id` exists with different content.
-            DecisionNotFound: a declared `supersedes` target does not exist.
+            DecisionNotFound: a declared `supersedes`/`supplements` target does
+                not exist.
             InvalidTransition: a declared short-term `supersedes` target is not
                 supersedable (wrong status, or would create a cycle).
         """
@@ -79,6 +85,8 @@ class LifecycleEngine:
                 return decision
             for target_id in nd.supersedes:
                 await self._link_declared_supersede(tx, decision.decision_id, target_id, actor)
+            for target_id in nd.supplements:
+                await self._link_declared_supplement(tx, decision.decision_id, target_id, actor)
         return decision
 
     async def record_long_term(self, nd: NewDecision, actor: Actor) -> Decision:
@@ -145,7 +153,10 @@ class LifecycleEngine:
         """Execute a pending promotion (human only): verbatim long-term copy +
         `PROMOTED_FROM` link + the source's own pending long-term-supersede
         claims (FR-5.2a: their `SUPERSEDES` link's `from` is this new copy, never
-        the short-term source) + source → `promoted` + queue resolution.
+        the short-term source) + source → `promoted` + queue resolution. Any of
+        the source's OTHER open queue items are voided too — `promoted` is
+        terminal, so a pending item on it is stale under I-4 (mirrors
+        `discard`/`supersede`'s auto-void).
 
         Raises:
             AuthorityViolation: `actor.kind != 'human'`.
@@ -187,6 +198,7 @@ class LifecycleEngine:
                 "promoted",
             )
             await self._execute_pending_claims(tx, source_id, lt_copy.decision_id, actor)
+            await self._void_open_items(tx, source_id, actor)
         return lt_copy
 
     async def promote_refined(
@@ -643,6 +655,21 @@ class LifecycleEngine:
             raise InvalidTransition(target_row.status, "supersede", msg)
         await self._check_acyclic(target_id, new_id, target_row.status, "supersede")
         await self._execute_supersede(tx, new_id, target_id, actor, item_id=None)
+
+    async def _link_declared_supplement(
+        self, tx: Tx, new_id: UUID, target_id: UUID, actor: Actor
+    ) -> None:
+        """`record`'s declared-`supplements` handling (FR-1.4, symmetric to
+        declared `supersedes` above): a short-term target is linked inline
+        (ungated, FR-5.2 — no status change, FR-5.3); a long-term target instead
+        files a pending `queue(kind='link')` suggestion that only a human can
+        later execute via `apply_item` (I-2)."""
+        locked = await self._store.lock_decisions(tx, [target_id])
+        target_row = _require(locked, target_id)
+        if target_row.tier == "long_term":
+            await self._store.enqueue(tx, "link", new_id, target_id, actor, None, None)
+            return
+        await self._execute_supplement(tx, new_id, target_id, actor, item_id=None)
 
 
 def _require(locked: dict[UUID, DecisionRow], decision_id: UUID) -> DecisionRow:

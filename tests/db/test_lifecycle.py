@@ -210,6 +210,81 @@ class TestRecordAndRecordLongTerm:
             await engine.record_long_term(_nd(decision_id=fixed_id), HUMAN)
 
 
+class TestRecordDeclaredSupplements:
+    """FR-1.4: `supplements=` declared at record time — symmetric to
+    `supersedes` handling above (FR-5's authority rule): short-term targets
+    link inline with NO status change (FR-5.3); long-term targets file a
+    pending `queue(kind='link')` item for a human to execute later via
+    `apply_item` (I-2)."""
+
+    async def test_short_term_target_links_inline(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        target = await engine.record(_nd(scenario="base decision"), RECORDER)
+        new = await engine.record(
+            _nd(scenario="supplementary detail", supplements=[target.decision_id]), RECORDER
+        )
+        assert await _status(store, target.decision_id) == "current"
+        target_hist = await store.history(target.decision_id)
+        new_hist = await store.history(new.decision_id)
+        assert "supplement_linked" in [t.action for t in target_hist.transitions]
+        assert "supplement_linked" in [t.action for t in new_hist.transitions]
+        assert any(
+            link.kind == "SUPPLEMENTS"
+            and link.from_id == new.decision_id
+            and link.to_id == target.decision_id
+            for link in target_hist.links
+        )
+
+    async def test_long_term_target_files_pending_link_item(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        target = await engine.record_long_term(_nd(scenario="durable policy"), HUMAN)
+        new = await engine.record(
+            _nd(scenario="agent notes a supplement", supplements=[target.decision_id]), RECORDER
+        )
+        # A long-term target only gets a pending claim (I-2) — no link yet.
+        target_hist = await store.history(target.decision_id)
+        assert target_hist.links == []
+        assert await _status(store, target.decision_id) == "current"
+
+        open_items = await store.open_queue(kinds=["link"])
+        matching = [
+            v
+            for v in open_items
+            if v.item.decision_id == new.decision_id and v.item.target_id == target.decision_id
+        ]
+        assert len(matching) == 1
+        item_id = matching[0].item.item_id
+
+        await engine.apply_item(item_id, HUMAN)
+        target_hist = await store.history(target.decision_id)
+        assert any(
+            link.kind == "SUPPLEMENTS" and link.from_id == new.decision_id
+            for link in target_hist.links
+        )
+
+    async def test_mixed_supersedes_and_supplements_in_one_record(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        supersede_target = await engine.record(_nd(scenario="stale decision"), RECORDER)
+        supplement_target = await engine.record(_nd(scenario="related decision"), RECORDER)
+        new = await engine.record(
+            _nd(
+                scenario="consolidated decision",
+                supersedes=[supersede_target.decision_id],
+                supplements=[supplement_target.decision_id],
+            ),
+            RECORDER,
+        )
+        assert await _status(store, supersede_target.decision_id) == "superseded"
+        assert await _status(store, supplement_target.decision_id) == "current"
+        new_hist = await store.history(new.decision_id)
+        actions = [t.action for t in new_hist.transitions]
+        assert "superseded" in actions
+        assert "supplement_linked" in actions
+
+
 # ===========================================================================
 # recommend — any actor; archived implicitly reactivates
 # ===========================================================================
@@ -295,6 +370,33 @@ class TestMatrixPromote:
     async def test_unknown_item_raises_item_not_found(self, engine: LifecycleEngine) -> None:
         with pytest.raises(ItemNotFound):
             await engine.promote(999_999_999, HUMAN)
+
+    async def test_promote_voids_stray_open_items_on_source(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """`promoted` is terminal — a second, unrelated open item left on the
+        source must be voided too (I-4), not just the triggering promote item."""
+        d = await reach(engine, store, "short_term", "current")
+        promote_item_id = await engine.recommend(d.decision_id, RECORDER, "promote me")
+        assert promote_item_id is not None
+        other = await engine.record(_nd(scenario="unrelated candidate"), RECORDER)
+        async with store.transaction() as tx:
+            stray_item_id = await store.enqueue(
+                tx, "link", d.decision_id, other.decision_id, RECORDER, "maybe related", 0.5
+            )
+        assert stray_item_id is not None
+
+        await engine.promote(promote_item_id, HUMAN)
+
+        with pytest.raises(ItemAlreadyResolved):
+            await engine.apply_item(stray_item_id, HUMAN)
+        hist = await store.history(d.decision_id)
+        voided_item_ids = {
+            t.payload["item_id"]
+            for t in hist.transitions
+            if t.action == "voided" and t.payload is not None
+        }
+        assert stray_item_id in voided_item_ids
 
 
 class TestMatrixDecline:
