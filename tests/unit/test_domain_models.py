@@ -7,16 +7,20 @@ import pytest
 from pydantic import ValidationError
 
 from binnacle.domain.errors import (
+    AuthorityViolation,
     BinnacleError,
     ConfigError,
     DecisionNotFound,
     EmbeddingDimensionMismatch,
+    IdempotencyConflict,
+    InvalidTransition,
     ItemAlreadyResolved,
     ItemNotFound,
     UnknownDomain,
 )
 from binnacle.domain.models import (
     Actor,
+    CandidatePair,
     CompactDecision,
     Link,
     NewDecision,
@@ -67,6 +71,29 @@ class TestErrorHierarchy:
         exc = ItemAlreadyResolved("test")
         assert isinstance(exc, BinnacleError)
 
+    def test_invalid_transition_carries_context(self) -> None:
+        """InvalidTransition carries from_status and attempted_action."""
+        exc = InvalidTransition(
+            from_status="current", attempted_action="promoted", message="Not allowed"
+        )
+        assert exc.from_status == "current"
+        assert exc.attempted_action == "promoted"
+        assert "current" in str(exc)
+        assert "promoted" in str(exc)
+        assert isinstance(exc, BinnacleError)
+
+    def test_authority_violation_is_binnacle_error(self) -> None:
+        """AuthorityViolation inherits from BinnacleError."""
+        exc = AuthorityViolation("User lacks permissions")
+        assert isinstance(exc, BinnacleError)
+        assert "permissions" in str(exc).lower() or "authority" in str(exc).lower()
+
+    def test_idempotency_conflict_is_binnacle_error(self) -> None:
+        """IdempotencyConflict inherits from BinnacleError."""
+        exc = IdempotencyConflict("Duplicate request")
+        assert isinstance(exc, BinnacleError)
+        assert "duplicate" in str(exc).lower() or "idempotency" in str(exc).lower()
+
 
 class TestActor:
     """Test Actor model."""
@@ -79,7 +106,7 @@ class TestActor:
 
     def test_actor_kind_validation(self) -> None:
         """Actor kind must be human, agent, or engine."""
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             Actor(kind="invalid", id="alice")  # type: ignore
 
     def test_actor_as_str(self) -> None:
@@ -104,6 +131,18 @@ class TestActor:
         actor = Actor.from_str("engine:s1/stage/0")
         assert actor.kind == "engine"
         assert actor.id == "s1/stage/0"
+
+    def test_actor_round_trip_with_colon_in_id(self) -> None:
+        """Actor round-trip preserves colon in id."""
+        # Create actor with colon in id
+        actor = Actor(kind="agent", id="meridian/sess:1")
+        # Serialize to string
+        serialized = actor.as_str()
+        assert serialized == "agent:meridian/sess:1"
+        # Deserialize from string
+        deserialized = Actor.from_str(serialized)
+        assert deserialized.kind == actor.kind
+        assert deserialized.id == actor.id
 
     def test_actor_frozen(self) -> None:
         """Actor is frozen (immutable)."""
@@ -605,6 +644,35 @@ class TestSuggestion:
         assert suggestion.confidence == 0.85
 
 
+class TestCandidatePair:
+    """Test CandidatePair dataclass."""
+
+    def test_candidate_pair_creation(self) -> None:
+        """CandidatePair has decision, other, and similarity fields."""
+        decision_id1 = uuid4()
+        decision_id2 = uuid4()
+        decision = CompactDecision(
+            id=decision_id1,
+            domain="database",
+            tier="short_term",
+            status="current",
+            outcome_truncated="Chose PostgreSQL",
+            subject_refs=[],
+        )
+        other = CompactDecision(
+            id=decision_id2,
+            domain="database",
+            tier="short_term",
+            status="current",
+            outcome_truncated="Chose MySQL",
+            subject_refs=[],
+        )
+        pair = CandidatePair(decision=decision, other=other, similarity=0.92)
+        assert pair.decision == decision
+        assert pair.other == other
+        assert pair.similarity == 0.92
+
+
 class TestPromotionAssessment:
     """Test PromotionAssessment dataclass."""
 
@@ -621,3 +689,92 @@ class TestPromotionAssessment:
         assert assessment.recommend is True
         assert assessment.rationale == "Meets all criteria"
         assert assessment.confidence == 0.92
+
+
+class TestFrozenImmutability:
+    """Test that all frozen dataclasses are immutable."""
+
+    @pytest.mark.parametrize(
+        "obj,attr",
+        [
+            (Actor(kind="human", id="alice"), "id"),
+            (
+                CompactDecision(
+                    id=uuid4(),
+                    domain="test",
+                    tier="short_term",
+                    status="current",
+                    outcome_truncated="test",
+                    subject_refs=[],
+                ),
+                "domain",
+            ),
+            (
+                Transition(
+                    transition_id=uuid4(),
+                    decision_id=uuid4(),
+                    action="recorded",
+                    actor=Actor(kind="human", id="alice"),
+                    at=datetime.now(UTC),
+                    reason="test",
+                    new_status="current",
+                    payload={},
+                ),
+                "reason",
+            ),
+            (Link(from_id=uuid4(), to_id=uuid4(), kind="SUPERSEDES"), "kind"),
+            (
+                QueueItem(
+                    item_id=uuid4(),
+                    kind="promote",
+                    decision_id=uuid4(),
+                    target_id=uuid4(),
+                    proposed_by=Actor(kind="human", id="alice"),
+                    proposed_at=datetime.now(UTC),
+                    rationale="test",
+                    confidence=0.5,
+                    resolved=False,
+                ),
+                "resolved",
+            ),
+            (
+                CandidatePair(
+                    decision=CompactDecision(
+                        id=uuid4(),
+                        domain="test",
+                        tier="short_term",
+                        status="current",
+                        outcome_truncated="test",
+                        subject_refs=[],
+                    ),
+                    other=CompactDecision(
+                        id=uuid4(),
+                        domain="test",
+                        tier="short_term",
+                        status="current",
+                        outcome_truncated="test",
+                        subject_refs=[],
+                    ),
+                    similarity=0.5,
+                ),
+                "similarity",
+            ),
+            (
+                Suggestion(kind="supersedes", rationale="test", confidence=0.5),
+                "kind",
+            ),
+            (
+                PromotionAssessment(
+                    decision_id=uuid4(),
+                    recommend=True,
+                    rationale="test",
+                    confidence=0.5,
+                ),
+                "recommend",
+            ),
+        ],
+    )
+    def test_frozen_dataclass_immutable(self, obj: object, attr: str) -> None:
+        """All frozen dataclasses reject attribute assignment."""
+        with pytest.raises((AttributeError, ValueError)):
+            setattr(obj, attr, None)  # type: ignore

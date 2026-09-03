@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -32,13 +32,18 @@ TransitionAction = Literal[
 ]
 
 
-class Actor(BaseModel):
+@dataclass(frozen=True)
+class Actor:
     """An actor who performs actions."""
-
-    model_config = {"frozen": True}
 
     kind: ActorKind
     id: str
+
+    def __post_init__(self) -> None:
+        """Validate kind on construction."""
+        if self.kind not in ("human", "agent", "engine"):
+            msg = f"Invalid actor kind: {self.kind}"
+            raise ValueError(msg)
 
     def as_str(self) -> str:
         """Return actor as 'kind:id' string."""
@@ -175,29 +180,16 @@ class Decision:
     recorded_by: Actor
     recorded_at: datetime
     decided_at: datetime | None = None
-    options_considered: list[OptionConsidered] = None  # type: ignore
+    options_considered: list[OptionConsidered] = field(default_factory=list)
     consequences: str | None = None
     confidence: float | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
-    refs: list[Ref] = None  # type: ignore
-    supersedes: list[UUID] = None  # type: ignore
-    supplements: list[UUID] = None  # type: ignore
-    metadata: dict[str, Any] = None  # type: ignore
+    refs: list[Ref] = field(default_factory=list)
+    supersedes: list[UUID] = field(default_factory=list)
+    supplements: list[UUID] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: int = 1
-
-    def __post_init__(self) -> None:
-        """Initialize default empty collections."""
-        if self.options_considered is None:
-            object.__setattr__(self, "options_considered", [])
-        if self.refs is None:
-            object.__setattr__(self, "refs", [])
-        if self.supersedes is None:
-            object.__setattr__(self, "supersedes", [])
-        if self.supplements is None:
-            object.__setattr__(self, "supplements", [])
-        if self.metadata is None:
-            object.__setattr__(self, "metadata", {})
 
 
 @dataclass(frozen=True)
