@@ -683,6 +683,36 @@ class PostgresStore:
             rows = await cur.fetchall()
             return await self._hydrate_decisions(conn, rows)
 
+    async def get_many_compact(
+        self, ids: Sequence[UUID], *, compact_chars: int = 200
+    ) -> list[CompactDecision]:
+        if not ids:
+            return []
+        schema = self._schema
+        params: dict[str, Any] = {"ids": list(ids), "compact_chars": compact_chars}
+        sql = (
+            f"SELECT d.decision_id, d.domain, d.tier, d.status, "
+            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
+            f"FROM {schema}.decisions d WHERE d.decision_id = ANY(%(ids)s)"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+            subject_refs_by_id = await self._fetch_subject_refs(
+                conn, [r["decision_id"] for r in rows]
+            )
+        return [
+            CompactDecision(
+                id=r["decision_id"],
+                domain=r["domain"],
+                tier=r["tier"],
+                status=r["status"],
+                outcome_truncated=r["outcome_truncated"],
+                subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+            )
+            for r in rows
+        ]
+
     async def relevant(
         self,
         *,

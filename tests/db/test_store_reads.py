@@ -262,6 +262,34 @@ class TestGetDecisionAndGetMany:
         assert await store.get_many([]) == []
 
 
+class TestGetManyCompact:
+    """`get_many`'s compact projection (docs/components/04's "Compact
+    projections are SQL-level" contract point) -- `precedent()`'s hydration
+    step needs this rather than `get_many` + Python-side trimming."""
+
+    async def test_truncates_outcome_in_sql(
+        self, store: PostgresStore, narrative: Narrative
+    ) -> None:
+        results = await store.get_many_compact([narrative.batching], compact_chars=5)
+        assert len(results) == 1
+        assert results[0].id == narrative.batching
+        # narrative's batching decision outcome: "batch ingestion; retries unnecessary"
+        assert results[0].outcome_truncated == "batch"
+
+    async def test_returns_matching_subset_with_subject_refs(
+        self, store: PostgresStore, narrative: Narrative
+    ) -> None:
+        results = await store.get_many_compact(
+            [narrative.backoff, narrative.batching, uuid4()], compact_chars=200
+        )
+        assert {c.id for c in results} == {narrative.backoff, narrative.batching}
+        batching = next(c for c in results if c.id == narrative.batching)
+        assert any(r.identifier == "portolan-ingest" for r in batching.subject_refs)
+
+    async def test_empty_ids_returns_empty(self, store: PostgresStore) -> None:
+        assert await store.get_many_compact([], compact_chars=200) == []
+
+
 class TestRelevant:
     """FR-6.1 relevance matrix: scoped/unscoped x status x as_of x archived."""
 

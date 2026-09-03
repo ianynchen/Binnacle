@@ -17,7 +17,7 @@ between calls).
 from collections.abc import Sequence
 
 from binnacle.application.ports import Embedder, StorePort
-from binnacle.domain.models import CompactDecision, Decision, PrecedentHit, Tier
+from binnacle.domain.models import PrecedentHit, Tier
 
 # `store.knn` already protects itself against archived/discarded starving the
 # result (over-fetches k*4 internally, per StorePort.knn). `domains`/`tiers`/
@@ -53,10 +53,12 @@ async def precedent(
 
     Pipeline: `embedder.embed([question])` -> `store.knn` (over-fetched when
     `domains`/`tiers`/`include_dead=False` will drop candidates, see
-    `_OVERFETCH_FACTOR`) -> filter by `domains`/`tiers` if given -> drop
-    superseded/not_promoted when `include_dead=False` -> hydrate each survivor
-    into a `CompactDecision` (outcome truncated to `compact_outcome_chars`,
-    same convention as `relevant()`/`by_source()`) paired with its similarity.
+    `_OVERFETCH_FACTOR`) -> `store.get_many_compact` (SQL-level projection,
+    `outcome` truncated to `compact_outcome_chars` in SQL -- no full-row fetch
+    then trim, docs/components/04's "Compact projections are SQL-level"
+    contract point) -> filter by `domains`/`tiers` if given -> drop
+    superseded/not_promoted when `include_dead=False`, each survivor paired
+    with its similarity.
 
     Archived/discarded decisions are never returned, regardless of
     `include_dead` (`store.knn` excludes them at the SQL join before this
@@ -89,46 +91,25 @@ async def precedent(
         return []
 
     ids = [decision_id for decision_id, _ in neighbors]
-    decisions_by_id = {d.decision_id: d for d in await store.get_many(ids)}
+    compact_by_id = {
+        c.id: c for c in await store.get_many_compact(ids, compact_chars=compact_outcome_chars)
+    }
 
     domain_set = set(domains) if domains else None
     tier_set = set(tiers) if tiers else None
 
     hits: list[PrecedentHit] = []
     for decision_id, similarity in neighbors:
-        decision = decisions_by_id.get(decision_id)
-        if decision is None:
+        compact = compact_by_id.get(decision_id)
+        if compact is None:
             continue
-        if domain_set is not None and decision.domain not in domain_set:
+        if domain_set is not None and compact.domain not in domain_set:
             continue
-        if tier_set is not None and decision.tier not in tier_set:
+        if tier_set is not None and compact.tier not in tier_set:
             continue
-        if not include_dead and decision.status in _DEAD_STATUSES:
+        if not include_dead and compact.status in _DEAD_STATUSES:
             continue
-        hits.append(
-            PrecedentHit(
-                decision=_to_compact(decision, compact_outcome_chars),
-                similarity=similarity,
-            )
-        )
+        hits.append(PrecedentHit(decision=compact, similarity=similarity))
 
     hits.sort(key=lambda h: (-h.similarity, str(h.decision.id)))
     return hits[:limit]
-
-
-def _to_compact(decision: Decision, compact_outcome_chars: int) -> CompactDecision:
-    """Same projection shape `PostgresStore.relevant`/`by_source` build in SQL
-    (subject refs only, outcome left-truncated) -- built here in Python
-    instead, since the candidate set is a handful of ids picked by `knn`
-    (bounded by `limit * _OVERFETCH_FACTOR`), not a wide table scan; there is
-    no existing store primitive for "compact-project this specific id list"
-    and adding one is a store-primitive change outside this task's scope."""
-    subject_refs = [r for r in decision.refs if r.role == "subject"]
-    return CompactDecision(
-        id=decision.decision_id,
-        domain=decision.domain,
-        tier=decision.tier,
-        status=decision.status,
-        outcome_truncated=decision.outcome[:compact_outcome_chars],
-        subject_refs=subject_refs,
-    )

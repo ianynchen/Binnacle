@@ -274,6 +274,19 @@ class StorePort(Protocol):
         """Batch `get_decision` (FR-6.8). Ids with no matching row are simply absent."""
         ...
 
+    async def get_many_compact(
+        self, ids: Sequence[UUID], *, compact_chars: int = 200
+    ) -> list[CompactDecision]:
+        """`get_many`'s compact projection (docs/components/04's "Compact
+        projections are SQL-level" contract point): the same id-list lookup,
+        but selecting only the compact columns with `outcome` truncated to
+        `compact_chars` in SQL — no full-row fetch then trim. Exists for
+        `precedent()`, which hydrates a `knn`-picked id list rather than
+        scanning a filtered range. Ids with no matching row are simply absent;
+        result order is unspecified (callers that care, like `precedent()`,
+        re-sort themselves)."""
+        ...
+
     async def relevant(
         self,
         *,
