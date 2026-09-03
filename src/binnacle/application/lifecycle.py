@@ -84,10 +84,24 @@ class LifecycleEngine:
             )
             if outcome == "exists_identical":
                 return decision
+            # Lock the subject + every declared target TOGETHER, in one sorted
+            # `lock_decisions` call, before executing any link — locking them
+            # one at a time (in declaration order) let two concurrent `record`
+            # calls that name the same two targets in opposite order each hold
+            # one lock and wait on the other's, a classic deadlock (escapes as
+            # an untyped `DeadlockDetected` instead of a typed engine error).
+            target_ids = [*nd.supersedes, *nd.supplements]
+            locked: dict[UUID, DecisionRow] = {}
+            if target_ids:
+                locked = await self._store.lock_decisions(tx, [decision.decision_id, *target_ids])
             for target_id in nd.supersedes:
-                await self._link_declared_supersede(tx, decision.decision_id, target_id, actor)
+                await self._link_declared_supersede(
+                    tx, decision.decision_id, target_id, actor, _require(locked, target_id)
+                )
             for target_id in nd.supplements:
-                await self._link_declared_supplement(tx, decision.decision_id, target_id, actor)
+                await self._link_declared_supplement(
+                    tx, decision.decision_id, target_id, actor, _require(locked, target_id)
+                )
         return decision
 
     async def record_long_term(self, nd: NewDecision, actor: Actor) -> Decision:
@@ -638,13 +652,26 @@ class LifecycleEngine:
         decision may never directly supersede a long-term one. No acyclicity
         check is needed: `lt_copy_id` is a freshly minted id with no existing
         links, so it cannot already be an ancestor of anything.
+
+        Every claim's target is locked TOGETHER in one sorted `lock_decisions`
+        call before any claim executes — locking one target per iteration (in
+        queue order) let two concurrent promotions with overlapping claim
+        targets each hold one lock while waiting on the other's, a deadlock.
         """
-        for item in await self._store.open_items_for(tx, source_id):
-            if item.kind != "supersede":
-                continue
+        claims = [
+            item
+            for item in await self._store.open_items_for(tx, source_id)
+            if item.kind == "supersede"
+        ]
+        if not claims:
+            return
+        target_ids: list[UUID] = []
+        for item in claims:
             target_id = item.target_id
             assert target_id is not None, "a supersede claim always carries a target"
-            locked = await self._store.lock_decisions(tx, [target_id])
+            target_ids.append(target_id)
+        locked = await self._store.lock_decisions(tx, target_ids)
+        for item, target_id in zip(claims, target_ids, strict=True):
             target_row = _require(locked, target_id)
             if target_row.tier != "long_term" or target_row.status not in _LT_SUPERSEDABLE:
                 msg = "pending supersede claim's target is no longer supersedable"
@@ -653,13 +680,15 @@ class LifecycleEngine:
             await self._store.resolve_item(tx, item.item_id)
 
     async def _link_declared_supersede(
-        self, tx: Tx, new_id: UUID, target_id: UUID, actor: Actor
+        self, tx: Tx, new_id: UUID, target_id: UUID, actor: Actor, target_row: DecisionRow
     ) -> None:
         """`record`'s declared-`supersedes` handling: a short-term target is
         superseded inline (ungated, FR-5.2); a long-term target instead files a
-        pending claim (I-2) that only a promoting human can later execute."""
-        locked = await self._store.lock_decisions(tx, [target_id])
-        target_row = _require(locked, target_id)
+        pending claim (I-2) that only a promoting human can later execute.
+
+        `target_row` is already locked by the caller (`record`'s single batched
+        `lock_decisions` call, alongside the subject and every other declared
+        target) — this method does not lock anything itself."""
         if target_row.tier == "long_term":
             await self._store.enqueue(tx, "supersede", new_id, target_id, actor, None, None)
             return
@@ -670,15 +699,16 @@ class LifecycleEngine:
         await self._execute_supersede(tx, new_id, target_id, actor, item_id=None)
 
     async def _link_declared_supplement(
-        self, tx: Tx, new_id: UUID, target_id: UUID, actor: Actor
+        self, tx: Tx, new_id: UUID, target_id: UUID, actor: Actor, target_row: DecisionRow
     ) -> None:
         """`record`'s declared-`supplements` handling (FR-1.4, symmetric to
         declared `supersedes` above): a short-term target is linked inline
         (ungated, FR-5.2 — no status change, FR-5.3); a long-term target instead
         files a pending `queue(kind='link')` suggestion that only a human can
-        later execute via `apply_item` (I-2)."""
-        locked = await self._store.lock_decisions(tx, [target_id])
-        target_row = _require(locked, target_id)
+        later execute via `apply_item` (I-2).
+
+        `target_row` is already locked by the caller, same as
+        `_link_declared_supersede` above."""
         if target_row.tier == "long_term":
             await self._store.enqueue(tx, "link", new_id, target_id, actor, None, None)
             return

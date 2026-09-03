@@ -1286,6 +1286,43 @@ class TestTargeted:
         assert hist.decision.status in ("promoted", "superseded")
         assert _fold(hist.transitions) == hist.decision.status
 
+    async def test_record_declared_supersedes_lock_order_does_not_deadlock(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Regression: `record()` used to lock each declared `supersedes`
+        target one at a time, in declaration order -- two concurrent
+        `record()` calls naming the same two targets in opposite order could
+        each hold one row lock while waiting on the other's, a real Postgres
+        deadlock (escaping as an untyped `psycopg.errors.DeadlockDetected`
+        instead of a typed engine error, I-1). Batching the subject + every
+        declared target into one sorted `lock_decisions` call removes the
+        cross-call ordering disagreement: the two calls now still serialize
+        (I-1), but one simply waits for the other's row lock rather than
+        each waiting on a lock the other holds."""
+        p = await engine.record(_nd(scenario="target P"), RECORDER)
+        q = await engine.record(_nd(scenario="target Q"), RECORDER)
+
+        async def supersede_both(order: list[UUID], scenario: str) -> Decision:
+            return await engine.record(_nd(scenario=scenario, supersedes=order), RECORDER)
+
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                supersede_both([p.decision_id, q.decision_id], "supersedes P then Q"),
+                supersede_both([q.decision_id, p.decision_id], "supersedes Q then P"),
+                return_exceptions=True,
+            ),
+            timeout=10,
+        )
+
+        outcomes = [r for r in results if not isinstance(r, BaseException)]
+        errors = [r for r in results if isinstance(r, BaseException)]
+        assert len(outcomes) == 1, f"expected exactly one full success, got {results!r}"
+        assert len(errors) == 1, f"expected exactly one failure, got {results!r}"
+        assert isinstance(errors[0], InvalidTransition), (
+            f"expected InvalidTransition (the loser sees its target already "
+            f"superseded by the winner), got {errors[0]!r}"
+        )
+
     async def test_recommend_on_archived_reactivates(
         self, engine: LifecycleEngine, store: PostgresStore
     ) -> None:
