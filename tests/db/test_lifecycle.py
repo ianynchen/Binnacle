@@ -975,6 +975,31 @@ class TestMatrixResolveConflict:
         with pytest.raises(ItemAlreadyResolved):
             await engine.decline(loser_item_id, HUMAN, "too late")
 
+    async def test_winner_path_refuses_cycle(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Mirrors `test_cycle_refused` at the engine level, not just the
+        property walk's driver-side seq-ordering: `resolve_conflict`'s
+        `winner_id` path reuses `_check_acyclic`, so declaring the
+        ALREADY-superseded side the winner -- closing a cycle back through
+        the very link that superseded it -- is refused with the same
+        `InvalidTransition` a bare `supersede()` would raise, and nothing
+        else changes."""
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        await engine.supersede(a.decision_id, b.decision_id, RECORDER)  # a supersedes b
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+
+        with pytest.raises(InvalidTransition):
+            # b winning over a would make b supersede a -- but a already
+            # supersedes b, so this would close a cycle.
+            await engine.resolve_conflict(item_id, HUMAN, winner_id=b.decision_id)
+
+        assert await _status(store, a.decision_id) == "current"
+        assert await _status(store, b.decision_id) == "superseded"
+        open_items = await store.open_queue(kinds=["conflict"])
+        assert any(v.item.item_id == item_id for v in open_items)
+
     async def test_non_human_refused(self, engine: LifecycleEngine, store: PostgresStore) -> None:
         a = await reach(engine, store, "short_term", "current")
         b = await reach(engine, store, "short_term", "current")
