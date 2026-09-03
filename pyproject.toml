@@ -45,6 +45,14 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  # Registered (not deselected): seeding 10k decisions/100k transitions and
+  # running it measured ~14s locally, and the full suite ~34s total -- well
+  # under the "mark + addopts-deselect if >2min" threshold the task set, so
+  # it stays in the default `pytest`/check.sh run rather than needing a
+  # separate CI invocation.
+  "perf: NFR-7 seeded design-scale (10k decisions/100k transitions) timing assertions (tests/db/test_perf.py).",
+]
 
 [tool.importlinter]
 root_package = "binnacle"

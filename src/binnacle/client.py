@@ -18,7 +18,7 @@ adapter-free.
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from binnacle.adapters.postgres_store import PostgresStore
@@ -26,6 +26,7 @@ from binnacle.application.archival import archive_stale as _archive_stale
 from binnacle.application.config import BinnacleConfig
 from binnacle.application.discovery import backfill_embeddings as _backfill_embeddings
 from binnacle.application.discovery import discover as _discover
+from binnacle.application.export import to_json as _to_json
 from binnacle.application.lifecycle import LifecycleEngine
 from binnacle.application.query import precedent as _precedent
 from binnacle.domain.errors import AuthorityViolation, UnknownDomain
@@ -37,7 +38,6 @@ from binnacle.domain.models import (
     Decision,
     DiscoverySummary,
     DomainRecord,
-    ExportBundle,
     HistoryRecord,
     NewDecision,
     PrecedentHit,
@@ -232,9 +232,13 @@ class Binnacle:
         domains: Sequence[str] | None = None,
         tier: Tier | None = None,
         status: Sequence[str] | None = None,
-    ) -> ExportBundle:
-        """FR-6.6: filtered JSON-ready export. See `StorePort.export_rows`."""
-        return await self._store.export_rows(domains=domains, tier=tier, status=status)
+    ) -> dict[str, Any]:
+        """FR-6.6: a JSON-safe export document -- decisions (with refs, links,
+        transitions) and the domains registry, embeddings excluded. See
+        `StorePort.export_rows` (the filtered fetch) and
+        `application.export.to_json` (the JSON shaping)."""
+        bundle = await self._store.export_rows(domains=domains, tier=tier, status=status)
+        return _to_json(bundle)
 
     # -- domain registry (FR-2) --------------------------------------------
 

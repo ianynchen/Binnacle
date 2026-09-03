@@ -73,3 +73,10 @@ class ScriptedSuggester:
             self._promotion_assessments[len(decisions) :],
         )
         return taken
+
+    def queue_promotion_assessment(self, assessment: PromotionAssessment) -> None:
+        """Script one more `assess_promotion` answer after construction --
+        for callers (e.g. a narrative-style test) that only learn a
+        decision's id from an earlier `record()` call, so the assessment
+        can't be known at `ScriptedSuggester(...)` construction time."""
+        self._promotion_assessments.append(assessment)

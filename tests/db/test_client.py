@@ -9,14 +9,17 @@ registry verbs it owns outright) — it does NOT re-litigate Lifecycle Engine
 state-machine coverage, already exhaustive in tests/db/test_lifecycle.py.
 """
 
+import json
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 
 from binnacle.application.config import BinnacleConfig
 from binnacle.client import Binnacle
 from binnacle.domain.errors import AuthorityViolation, UnknownDomain
-from binnacle.domain.models import Actor, NewDecision
+from binnacle.domain.models import Actor, NewDecision, OptionConsidered, Ref
 from tests.helpers import StubEmbedder
 
 HUMAN = Actor("human", "alice")
@@ -112,11 +115,12 @@ class TestNarrativeAcceptance:
             for link in history.links
         )
 
-        # export: the refined long-term decision and its source both appear.
-        bundle = await bn.export()
-        exported_ids = {d.decision_id for d in bundle.decisions}
-        assert {source.decision_id, refined.decision_id} <= exported_ids
-        assert any(dom.name == "eng" for dom in bundle.domains)
+        # export: the refined long-term decision and its source both appear,
+        # as a JSON-safe dict (FR-6.6) -- see TestExport for the full contract.
+        document = await bn.export()
+        exported_ids = {d["decision_id"] for d in document["decisions"]}
+        assert {str(source.decision_id), str(refined.decision_id)} <= exported_ids
+        assert any(dom["name"] == "eng" for dom in document["domains"])
 
 
 class TestBoundaryErrors:
@@ -230,3 +234,111 @@ class TestQueueResolutionDelegation:
         history = await bn.history(source.decision_id)
         assert history.decision.status == "current"
         assert any(t.action == "dismissed" for t in history.transitions)
+
+
+class TestExport:
+    """FR-6.6 (docs/components/04's "Export content check"): `bn.export()`
+    returns a JSON-safe dict -- `json.dumps` succeeds with no further
+    conversion, embeddings never appear, the domains registry is included,
+    and a spot re-hydration of one exported decision matches the stored
+    `Decision` field-by-field."""
+
+    async def test_export_document_is_json_serializable(self, bn: Binnacle) -> None:
+        source = await bn.record(
+            _nd(
+                options_considered=[
+                    OptionConsidered(option="fixed-interval retry", why_rejected="thundering herd")
+                ],
+                consequences="ops must monitor retry storms",
+                confidence=0.8,
+                valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+                valid_until=datetime(2027, 1, 1, tzinfo=UTC),
+                refs=[
+                    Ref(role="subject", kind="component", identifier="portolan-ingest", note=None)
+                ],
+                metadata={"note": "from narrative walkthrough"},
+            ),
+            actor=AGENT,
+        )
+        item_id = await bn.recommend(source.decision_id, actor=AGENT, reason="ready")
+        assert item_id is not None
+        await bn.promote_refined([source.decision_id], refined=_nd(), actor=HUMAN)
+
+        document = await bn.export()
+
+        json.dumps(document)  # raises TypeError on anything not JSON-safe
+
+    async def test_export_excludes_embeddings(self, bn: Binnacle) -> None:
+        await bn.record(_nd(), actor=AGENT)
+
+        document = await bn.export()
+
+        assert "embeddings" not in document
+        assert all("embedding" not in decision for decision in document["decisions"])
+
+    async def test_export_includes_domains_registry(self, bn: Binnacle) -> None:
+        await bn.add_domain("product", "product decisions", actor=HUMAN)
+
+        document = await bn.export()
+
+        names = {d["name"] for d in document["domains"]}
+        assert {"eng", "product"} <= names
+
+    async def test_export_spot_rehydration_equality(self, bn: Binnacle) -> None:
+        """Parse one exported decision back and compare it, field-by-field,
+        against the stored `Decision` (FR-6.6's "spot re-hydration
+        equality")."""
+        valid_from = datetime(2026, 1, 1, tzinfo=UTC)
+        source = await bn.record(
+            _nd(
+                options_considered=[
+                    OptionConsidered(option="fixed-interval retry", why_rejected="thundering herd")
+                ],
+                consequences="ops must monitor retry storms",
+                confidence=0.8,
+                valid_from=valid_from,
+                refs=[
+                    Ref(role="subject", kind="component", identifier="portolan-ingest", note=None)
+                ],
+                metadata={"note": "from narrative walkthrough"},
+            ),
+            actor=AGENT,
+        )
+
+        document = await bn.export()
+        exported = next(
+            d for d in document["decisions"] if d["decision_id"] == str(source.decision_id)
+        )
+
+        assert UUID(exported["decision_id"]) == source.decision_id
+        assert exported["domain"] == source.domain
+        assert exported["tier"] == source.tier
+        assert exported["status"] == source.status
+        assert exported["scenario"] == source.scenario
+        assert exported["outcome"] == source.outcome
+        assert exported["reasoning"] == source.reasoning
+        assert exported["source"] == source.source
+        assert Actor.from_str(exported["recorded_by"]) == source.recorded_by
+        assert datetime.fromisoformat(exported["recorded_at"]) == source.recorded_at
+        assert datetime.fromisoformat(exported["valid_from"]) == source.valid_from
+        assert exported["valid_until"] is None
+        assert exported["consequences"] == source.consequences
+        assert exported["confidence"] == source.confidence
+        assert exported["options_considered"] == [
+            {"option": "fixed-interval retry", "why_rejected": "thundering herd"}
+        ]
+        assert exported["refs"] == [
+            {"role": "subject", "kind": "component", "identifier": "portolan-ingest", "note": None}
+        ]
+        assert exported["metadata"] == {"note": "from narrative walkthrough"}
+        assert exported["schema_version"] == source.schema_version
+
+    async def test_export_filters_by_domain(self, bn: Binnacle) -> None:
+        await bn.add_domain("product", "product decisions", actor=HUMAN)
+        eng_decision = await bn.record(_nd(domain="eng"), actor=AGENT)
+        await bn.record(_nd(domain="product"), actor=AGENT)
+
+        document = await bn.export(domains=["eng"])
+
+        exported_ids = {d["decision_id"] for d in document["decisions"]}
+        assert exported_ids == {str(eng_decision.decision_id)}
