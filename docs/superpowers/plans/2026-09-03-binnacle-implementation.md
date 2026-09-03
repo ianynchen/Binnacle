@@ -405,7 +405,7 @@ class LifecycleEngine:
 - [x] **Step 1:** Full `scripts/check.sh` + `pre-commit run --all-files` + perf marker run locally; fix nothing silently — report.
 - [x] **Step 2:** README: install, provisioning preconditions (createdb + CREATE EXTENSION vector), 25-line embedding example (config → migrate → record → recommend → promote → precedent), the guardrail stack (pre-commit/CI), test env var, actor attestation note, limitations (v2 list pointer).
 - [x] **Step 3:** Update ARCHITECTURE P-1 (driver: psycopg3 confirmed + chosen pins); tick plan checkboxes.
-- [ ] **Step 4:** Commit `docs: close out phase 1`; **push `origin main`** (owner-authorized); verify CI runs green on GitHub (watch the run via `gh run watch` or report the URL + first status).
+- [x] **Step 4:** Commit `docs: close out phase 1`; **push `origin main`** (owner-authorized); verify CI runs green on GitHub (watch the run via `gh run watch` or report the URL + first status). — Pushed 3711f2e; CI run 33792610881 green (only annotation: Node 20 deprecation warning in checkout/setup-uv actions).
 
 ## Self-Review (performed)
 
