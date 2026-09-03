@@ -279,6 +279,45 @@ class TestLimitHonoredWhenFiltersDropRows:
         assert [h.decision.id for h in hits] == [eng1, eng2, eng3]
 
 
+class TestAdaptiveOverfetch:
+    """FR-6.3 fix: a single `k = limit * 4` round can under-fill when a
+    filter rejects most of that round's candidates, even though the index
+    holds enough matches overall. `precedent()` escalates `k` (see
+    `application.query._OVERFETCH_FACTOR`/`_MAX_OVERFETCH_ROUNDS`/
+    `_OVERFETCH_CAP`) instead of accepting the short result."""
+
+    async def test_escalates_when_first_round_under_fills_but_index_has_more(
+        self, store: PostgresStore, embedder: StubEmbedder, query_vector: list[float]
+    ) -> None:
+        # 15 product decisions, all a perfect match -- round 1's k=limit*4=12
+        # nearest neighbors are entirely these (distance 0 beats every eng
+        # decision below), so a single, non-escalating round would filter
+        # domains=["eng"] down to zero even though 3 eng decisions exist.
+        for _ in range(15):
+            await _seed(store, _decision(domain="product"), query_vector)
+
+        eng1 = await _seed(store, _decision(domain="eng"), _perturb(query_vector, 1))
+        eng2 = await _seed(store, _decision(domain="eng"), _perturb(query_vector, 2))
+        eng3 = await _seed(store, _decision(domain="eng"), _perturb(query_vector, 3))
+
+        hits = await precedent(store, embedder, QUESTION, domains=["eng"], limit=3)
+
+        assert [h.decision.id for h in hits] == [eng1, eng2, eng3]
+
+    async def test_returns_all_matches_when_index_smaller_than_limit(
+        self, store: PostgresStore, embedder: StubEmbedder, query_vector: list[float]
+    ) -> None:
+        # Only 2 decisions total exist, well under `limit` -- escalation must
+        # recognize the index is exhausted (round 1 returns fewer rows than
+        # requested) and stop after one round instead of looping.
+        first = await _seed(store, _decision(), _perturb(query_vector, 0))
+        second = await _seed(store, _decision(), _perturb(query_vector, 1))
+
+        hits = await precedent(store, embedder, QUESTION, limit=10)
+
+        assert {h.decision.id for h in hits} == {first, second}
+
+
 class TestClientWiring:
     """Thin end-to-end check that `Binnacle.precedent()` delegates to
     `application.query.precedent` and applies `config.compact_outcome_chars`

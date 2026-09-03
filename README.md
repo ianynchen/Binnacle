@@ -152,12 +152,15 @@ named adoption triggers:
 
 - **No import path.** `export()` produces a JSON bundle; there is no
   corresponding `import` to load one back into a store (REQUIREMENTS §5).
-- **Precedent over-fetch is a fixed multiplier, not adaptive.**
-  `precedent()` over-fetches candidates by a fixed `4×` factor when
+- **Precedent over-fetch escalates, but only up to a hard cap.**
+  `precedent()` over-fetches candidates at a `4×` factor when
   `domains`/`tiers`/`include_dead=False` will drop some (matching
-  `store.knn`'s own over-fetch factor) — a filter that rejects more than 3
-  of 4 candidates can still return fewer than `limit` results
-  (`src/binnacle/application/query.py`).
+  `store.knn`'s own over-fetch factor), and re-queries at `k × 4` — excluding
+  ids already seen — when a round still under-fills the result and the index
+  looks like it has more to give. Escalation stops at the first of 3 rounds
+  or `k` reaching 1024, whichever comes first: a filter narrow enough to
+  exhaust that cap without filling `limit` still returns fewer than `limit`
+  results (`src/binnacle/application/query.py`).
 - **Discovery re-embeds rather than reading back stored vectors.** The
   `StorePort` has no "read one embedding back" primitive, so `discover()`
   re-derives a subject decision's vector by re-embedding its text for its

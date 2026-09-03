@@ -15,6 +15,7 @@ between calls).
 """
 
 from collections.abc import Sequence
+from uuid import UUID
 
 from binnacle.application.ports import Embedder, StorePort
 from binnacle.domain.models import PrecedentHit, Tier
@@ -23,14 +24,23 @@ from binnacle.domain.models import PrecedentHit, Tier
 # result (over-fetches k*4 internally, per StorePort.knn). `domains`/`tiers`/
 # `include_dead=False` are filters knn cannot apply itself (it only knows the
 # vector index, not decision attributes) -- applying the SAME multiplier here,
-# on top of the caller's `limit`, keeps `precedent()`'s over-fetch consistent
+# on top of the caller's `limit`, keeps `precedent()`'s first round consistent
 # with the store's own documented factor rather than inventing a second knob.
-# This is a fixed multiplier, not an adaptive retry: a filter that rejects
-# more than 3 out of 4 candidates can still return fewer than `limit` results.
-# That is a documented limitation, not a silent bug -- widening it further (or
-# making it adaptive) is a store/query-primitive change and out of this task's
-# scope.
+#
+# A single round at this factor can still under-fill (a filter that rejects
+# more than 3 out of 4 candidates leaves fewer than `limit` survivors even
+# though the index holds more matches) -- `precedent()` escalates: each round
+# that under-fills AND came back with a full batch (`len(neighbors) == k`,
+# meaning the index likely has more beyond this round) re-queries at `k *
+# _OVERFETCH_FACTOR`, excluding ids already seen. Escalation stops at the
+# first of `_MAX_OVERFETCH_ROUNDS` rounds or `k` reaching `_OVERFETCH_CAP`
+# (whichever comes first) -- an intentionally small bound, not a promise to
+# always find `limit` matches: a filter narrow enough to exhaust the cap
+# without filling the result is still a documented limitation (README
+# "Limitations"), just a much rarer one than the old fixed-4x single shot.
 _OVERFETCH_FACTOR = 4
+_MAX_OVERFETCH_ROUNDS = 3
+_OVERFETCH_CAP = 1024
 
 # Statuses `include_dead=False` drops. Archived/discarded are excluded
 # unconditionally by `store.knn` itself (its join to `decisions`), regardless
@@ -53,12 +63,13 @@ async def precedent(
 
     Pipeline: `embedder.embed([question])` -> `store.knn` (over-fetched when
     `domains`/`tiers`/`include_dead=False` will drop candidates, see
-    `_OVERFETCH_FACTOR`) -> `store.get_many_compact` (SQL-level projection,
-    `outcome` truncated to `compact_outcome_chars` in SQL -- no full-row fetch
-    then trim, docs/components/04's "Compact projections are SQL-level"
-    contract point) -> filter by `domains`/`tiers` if given -> drop
-    superseded/not_promoted when `include_dead=False`, each survivor paired
-    with its similarity.
+    `_OVERFETCH_FACTOR`; escalated across further rounds when a round still
+    under-fills, see `_MAX_OVERFETCH_ROUNDS`/`_OVERFETCH_CAP`) ->
+    `store.get_many_compact` (SQL-level projection, `outcome` truncated to
+    `compact_outcome_chars` in SQL -- no full-row fetch then trim,
+    docs/components/04's "Compact projections are SQL-level" contract point)
+    -> filter by `domains`/`tiers` if given -> drop superseded/not_promoted
+    when `include_dead=False`, each survivor paired with its similarity.
 
     Archived/discarded decisions are never returned, regardless of
     `include_dead` (`store.knn` excludes them at the SQL join before this
@@ -86,30 +97,41 @@ async def precedent(
 
     needs_overfetch = bool(domains) or bool(tiers) or not include_dead
     k = limit * _OVERFETCH_FACTOR if needs_overfetch else limit
-    neighbors = await store.knn(vector, k)
-    if not neighbors:
-        return []
-
-    ids = [decision_id for decision_id, _ in neighbors]
-    compact_by_id = {
-        c.id: c for c in await store.get_many_compact(ids, compact_chars=compact_outcome_chars)
-    }
+    k = min(k, _OVERFETCH_CAP)
 
     domain_set = set(domains) if domains else None
     tier_set = set(tiers) if tiers else None
 
     hits: list[PrecedentHit] = []
-    for decision_id, similarity in neighbors:
-        compact = compact_by_id.get(decision_id)
-        if compact is None:
-            continue
-        if domain_set is not None and compact.domain not in domain_set:
-            continue
-        if tier_set is not None and compact.tier not in tier_set:
-            continue
-        if not include_dead and compact.status in _DEAD_STATUSES:
-            continue
-        hits.append(PrecedentHit(decision=compact, similarity=similarity))
+    seen_ids: list[UUID] = []
+    for round_num in range(1, _MAX_OVERFETCH_ROUNDS + 1):
+        neighbors = await store.knn(vector, k, exclude_ids=seen_ids)
+        if not neighbors:
+            break
+        seen_ids.extend(decision_id for decision_id, _ in neighbors)
+
+        ids = [decision_id for decision_id, _ in neighbors]
+        compact_by_id = {
+            c.id: c for c in await store.get_many_compact(ids, compact_chars=compact_outcome_chars)
+        }
+
+        for decision_id, similarity in neighbors:
+            compact = compact_by_id.get(decision_id)
+            if compact is None:
+                continue
+            if domain_set is not None and compact.domain not in domain_set:
+                continue
+            if tier_set is not None and compact.tier not in tier_set:
+                continue
+            if not include_dead and compact.status in _DEAD_STATUSES:
+                continue
+            hits.append(PrecedentHit(decision=compact, similarity=similarity))
+
+        index_exhausted = len(neighbors) < k
+        at_cap = k >= _OVERFETCH_CAP or round_num >= _MAX_OVERFETCH_ROUNDS
+        if len(hits) >= limit or index_exhausted or at_cap:
+            break
+        k = min(k * _OVERFETCH_FACTOR, _OVERFETCH_CAP)
 
     hits.sort(key=lambda h: (-h.similarity, str(h.decision.id)))
     return hits[:limit]
