@@ -21,13 +21,22 @@ transitions it is handed — mechanism stays outside judgment).
 
 ## The state machines
 
-**short_term**: `current → promoted | not_promoted | superseded | discarded |
-archived`; `not_promoted → current-for-consideration` via re-recommendation
-(status stays `not_promoted` until a later promote/decline resolves it — the
-queue item, not the status, carries pendingness); `archived → (prior status)` on
-reactivation. Terminal: `promoted`, `superseded`, `discarded`.
+**short_term** — the full exit matrix (FR-3.2/3.3/4.5; the transition-matrix
+test enumerates every cell):
 
-**long_term**: `current → superseded`. Terminal: `superseded`. Never archived.
+| From | Legal exits |
+|---|---|
+| `current` | `promoted` (gate), `not_promoted` (gate), `superseded` (any actor, ST successor), `discarded` (FR-3.3 rule), `archived` (clock; blocked while open queue items exist) |
+| `not_promoted` | `promoted` (gate, after re-recommendation — FR-4.5), `superseded` (a newer working decision may still supersede it), `discarded` (human), `archived` (clock, same open-item block) |
+| `archived` | reactivated → restored prior status (recorded explicitly in the transition's `new_status`); `discarded` (human) |
+| `promoted` / `superseded` / `discarded` | terminal |
+
+Re-recommendation of an `archived` decision by ANY actor implicitly reactivates
+it (both transitions, one transaction) — recommending only feeds the gate, so
+ownership does not constrain it (FR-3.4).
+
+**long_term**: `current → superseded` (only by a long-term successor — FR-5.2a).
+Terminal: `superseded`. Never archived.
 
 Pendingness (recommendations, suggested links/supersedes) lives ONLY in `queue`
 rows — a pending item never changes any status (I-4).
@@ -36,23 +45,28 @@ rows — a pending item never changes any status (I-4).
 
 | Act | Who may | Effect |
 |---|---|---|
-| record | any actor | decision row + `recorded` transition (+ immediate ST-target supersede links; LT-target claims → queue) |
+| record | any actor | decision row + `recorded` transition (+ immediate ST-target supersede links; LT-target claims → queue). Same-id retry: hash-identical no-op, divergent `IdempotencyConflict` |
 | record_long_term | human | LT row + `recorded` + `promoted` transitions (FR-4.4) |
 | recommend | any actor | queue item + `recommended` transition |
 | promote (verbatim) | human | LT copy + `PROMOTED_FROM` link + pending-supersede execution + source→`promoted` + queue resolve + transitions |
 | promote_refined | human | as promote, but LT row = human-authored content, ≥1 sources each linked+`promoted`; transitions carry `refined: true` (FR-4.6) |
 | decline | human | source→`not_promoted` + queue resolve + transition with reason |
-| discard | recorder-of-own-ST or human | →`discarded` + transition (FR-3.3) |
-| supersede | actor; human if target is long_term | link + target→`superseded` + transitions on both |
+| discard | recorder-of-own-ST or human | →`discarded` + transition (FR-3.3) + auto-`voided` resolution of open queue items |
+| supersede | actor; human AND long_term successor required if target is long_term (FR-5.2a) | link + target→`superseded` + transitions on both + auto-`voided` resolution of the target's open queue items |
 | supplement | actor; human if target is long_term | link + `supplement_linked` transitions; NO status change (FR-5.3) |
 | archive / reactivate | engine (sweep) / any-on-own, human-on-any | status flip + transition |
-| dismiss-link-item | human | queue resolve + transition; record untouched |
+| apply-item | human (always, since suggested links/supersedes may touch LT) | executes the suggested link/supersede + queue resolve + transitions (`payload.item_id`) |
+| dismiss-item | human | queue resolve as dismissed + transition; record untouched |
 
 ## Enforcement mechanics
 
 - **Authority (I-2)**: every act declares its required actor kinds; the engine
   checks the attested `Actor.kind` before opening the transaction and raises
   `AuthorityViolation` — never a silent no-op.
+- **Serialization (I-1)**: every act's transaction opens `SELECT … FOR UPDATE`
+  on all touched decisions; queue resolutions use the guarded conditional
+  UPDATE. Status writes always carry `new_status` in the transition (the
+  computable fold).
 - **Legality**: each act validates the current status against the machine
   (`InvalidTransition` names both states). The status it writes goes through the
   store's paired `apply_transition` only.

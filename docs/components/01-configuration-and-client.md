@@ -34,6 +34,7 @@ class BinnacleConfig(BaseModel):
     suggester: Suggester | None = None      # live port; None disables discovery classification
     embedding_dim: int = 768                # must match the migrated VECTOR(n) column
     archival_age_days: int = 90             # FR-3.4
+    compact_outcome_chars: int = 200        # FR-6.7 compact-projection truncation
     discovery: DiscoveryConfig = DiscoveryConfig()   # k (≤10), confidence_floor, per_sweep_cap
 ```
 
@@ -59,6 +60,9 @@ await bn.discard(decision_id, actor, reason)                     # FR-3.3 permis
 await bn.supersede(new_id, old_id, actor)                        # I-2 gate applies to long_term olds
 await bn.supplement(new_id, old_id, actor)                       # same gate
 await bn.reactivate(decision_id, actor)                          # un-archive (FR-3.4)
+await bn.apply_item(item_id, actor)                              # execute a suggested link/supersede
+                                                                 #   item (human if LT target)
+await bn.dismiss_item(item_id, actor, reason)                    # negative resolution, any item kind
 
 # Queries (FR-6):
 await bn.relevant(domains=None, subject=None, status=("current",), tier=None,
@@ -86,9 +90,15 @@ await bn.archive_stale()                     # FR-3.4
 - All ids are UUIDs, validated at the boundary; unknown domain → typed error
   naming the registry (FR-2.1).
 - Registry management: `bn.domains()` / `bn.add_domain(name, desc, actor=human)`
-  / `bn.deactivate_domain(...)` — human-only, transitioned (FR-2.2).
+  / `bn.update_domain(name, desc, actor=human)` / `bn.deactivate_domain(...)` —
+  human-only, audited in `domain_transitions` (FR-2.2).
+- Verbatim `promote` takes a queue item (everything durable passes through the
+  queue); a human promoting an unrecommended decision either self-recommends
+  first or uses `promote_refined`/`record_long_term` — deliberate, documented
+  ergonomics.
 - Errors are a typed hierarchy (`BinnacleError` root): `UnknownDomain`,
-  `DecisionNotFound`, `InvalidTransition`, `AuthorityViolation`, `ConfigError`.
+  `DecisionNotFound`, `InvalidTransition`, `AuthorityViolation`,
+  `IdempotencyConflict` (FR-1.6), `EmbeddingDimensionMismatch`, `ConfigError`.
 
 ## Acceptance
 

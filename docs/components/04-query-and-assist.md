@@ -29,14 +29,18 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
 - **history()** — the full record of one decision: content, refs, transitions in
   order, links, and both chains (predecessors/successors via recursive CTE) plus
   supplements. Includes archived/discarded targets (history hides nothing).
-- **precedent()** — `Embedder.embed(question)` → HNSW k-NN over non-archived
-  embeddings (both tiers) → attribute filters → hydrate projections, each with
-  its similarity score and status (superseded/`not_promoted` history INCLUDED by
+- **precedent()** — `Embedder.embed(question)` → HNSW k-NN joined to
+  `decisions` with status filters (archived/discarded excluded via the join —
+  HNSW cannot be partial on another table; over-fetch k×4 before filtering so
+  filtered rows don't starve the result) → hydrate projections, each with its
+  similarity score and status (superseded/`not_promoted` history INCLUDED by
   default — labeled, not hidden; FR-6.3).
 - **changes()** — transitions by window/action/actor, joined to compact
   projections (FR-6.5).
 - **queue()** — open items with recommender, rationale, confidence, age;
-  orderings `oldest` | `shakiest` (confidence asc) | `domain`.
+  orderings `oldest` | `shakiest` | `domain`. `shakiest` sorts by queue-item
+  confidence, falling back to the decision's own confidence, treating absent as
+  1.0 (sorted last).
 - **get_many() / by_source()** — batch direct access (FR-6.8).
 - **export()** — filtered decisions with their refs, links, transitions as one
   JSON document (schema_version stamped; FR-6.6).
@@ -45,15 +49,22 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
 
 - **backfill_embeddings(batch)** — FR-6.9 backlog → `Embedder.embed` in batches
   → upsert `embeddings`. Embedded text = `scenario + outcome + reasoning`
-  (OQ-3). Failure leaves the backlog intact (I-5: recall degrades, nothing
-  breaks).
-- **discover(batch)** — per newly embedded decision: k-NN (k ≤ config, default
-  10) → structural filters (same domain, subject overlap, temporal order,
-  status compatibility; FR-7.4) → `Suggester.classify_pairs` → queue items with
-  rationale+confidence, floor-filtered and per-sweep capped. Also
-  `Suggester.assess_promotion` over aging unrecommended short_term decisions →
-  pending-promote items (`proposed_by engine:binnacle`). No `Suggester`
-  configured → sweep no-ops cleanly.
+  (OQ-3). Vector length is validated against `config.embedding_dim` before any
+  upsert (`EmbeddingDimensionMismatch` aborts the sweep — a config bug, not a
+  data bug); other failures abort the batch with the backlog intact (I-5:
+  recall degrades, nothing breaks; the host observes the error and re-runs).
+- **discover(batch)** — cursor-driven: processes embeddings where
+  `discovered_at IS NULL` (set on completion; a sweep that dies resumes exactly
+  where it stopped; over-cap decisions stay NULL for the next sweep). Per
+  decision: k-NN (k ≤ config, default 10) → structural filters (same domain,
+  subject overlap, temporal order, status compatibility; FR-7.4) →
+  `Suggester.classify_pairs` (taxonomy: supersedes / supplements / unrelated —
+  no conflicts/related in v1) → queue items with rationale+confidence,
+  floor-filtered, per-sweep capped, deduplicated structurally by the partial
+  unique index on open items. Also `Suggester.assess_promotion` over aging
+  unrecommended short_term decisions → pending-promote items
+  (`proposed_by engine:binnacle`). No `Suggester` configured → sweep no-ops
+  cleanly.
 - **archive_stale()** — FR-3.4 clock rule → bulk `archived` transitions via the
   Lifecycle Engine.
 
@@ -76,4 +87,5 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
 - Sweep tests: backfill idempotency; discovery cap/floor honored, call-count
   bound asserted; archival only touches clock-eligible rows; all three no-op
   cleanly on empty input.
-- Export round-trip: export → JSON schema check → spot re-hydration equality.
+- Export content check: includes domains registry; excludes embeddings; JSON
+  schema check → spot re-hydration equality (import itself is v2).

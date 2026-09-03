@@ -135,7 +135,9 @@ CREATE TABLE transitions (
   actor         TEXT NOT NULL,                 -- "kind:id" (kind ∈ human|agent|engine)
   at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   reason        TEXT,
-  payload       JSONB                          -- e.g. {"target": "<decision_id>"}
+  new_status    TEXT,                          -- resulting status when the action changes one;
+                                               -- fold(transitions) = last non-null new_status (I-1)
+  payload       JSONB                          -- {"target": ...}; {"item_id": ...} on resolutions
 );
 
 CREATE TABLE queue (
@@ -153,9 +155,16 @@ CREATE TABLE domains (
 );
 
 CREATE TABLE embeddings (
-  decision_id UUID PRIMARY KEY REFERENCES decisions(decision_id),
-  embedding   VECTOR NOT NULL,                 -- dimension fixed by config at migration time
-  embedded_at TIMESTAMPTZ NOT NULL
+  decision_id   UUID PRIMARY KEY REFERENCES decisions(decision_id),
+  embedding     VECTOR NOT NULL,               -- dimension fixed by config at migration time
+  embedded_at   TIMESTAMPTZ NOT NULL,
+  discovered_at TIMESTAMPTZ                    -- discovery cursor: NULL = not yet swept (FR-7.4);
+                                               -- over-cap rows stay NULL, picked up next sweep
+);
+
+CREATE TABLE domain_transitions (              -- FR-2.2 registry audit (no decision row to attach to)
+  id BIGSERIAL PRIMARY KEY, domain TEXT NOT NULL, action TEXT NOT NULL,
+  actor TEXT NOT NULL, at TIMESTAMPTZ NOT NULL DEFAULT now(), reason TEXT
 );
 
 -- Hot-path partial indexes (NFR-5/NFR-7): active working set only.
@@ -165,11 +174,16 @@ CREATE INDEX idx_links_to     ON links(to_id, kind);
 CREATE INDEX idx_trans_time   ON transitions(at DESC);
 CREATE INDEX idx_trans_actor  ON transitions(actor, at DESC);
 CREATE INDEX idx_queue_open   ON queue(kind, proposed_at) WHERE NOT resolved;
+CREATE UNIQUE INDEX idx_queue_dedup ON queue(kind, decision_id,
+  COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid))
+  WHERE NOT resolved;                          -- discovery re-runs cannot duplicate open items
 -- pgvector index (HNSW) on embeddings.embedding, filtered joins exclude archived.
 ```
 
 Structural queries are recursive CTEs over `links` (supersession chains,
-supplement networks) — the same pattern as tradewind's session tree.
+supplement networks) — the same pattern as tradewind's session tree. When a
+decision is superseded or discarded, its open queue items auto-resolve as
+`voided` in the same transaction (FR-4.3); open items block archival (FR-3.4).
 
 ### 4.1 Schema ownership and migrations
 
@@ -196,14 +210,22 @@ radius. The division of responsibility:
 
 ### 4.2 Invariants
 
-- **I-1** Every `decisions.status` equals the fold of that decision's transitions;
-  the Lifecycle Engine is the only writer of `status`, `links`, and `transitions`,
-  and each act commits them in one transaction.
+- **I-1** Every `decisions.status` equals the fold of that decision's transitions,
+  where the fold is COMPUTABLE by construction: status-changing transitions
+  record their `new_status`, and the fold is the last non-null one (reactivation
+  writes the restored status explicitly). The Lifecycle Engine is the only writer
+  of `status`, `links`, and `transitions`; each act commits in one transaction,
+  opening with `SELECT … FOR UPDATE` on every touched decision row — concurrent
+  acts serialize, so validate-then-write races cannot occur. Queue resolution is
+  guarded the same way (`UPDATE … SET resolved = TRUE WHERE item_id = $1 AND NOT
+  resolved` must return a row — a double-tap resolves once).
 - **I-2** Long-term mutations (promotion, superseding or linking a long-term
   decision) require a **human** actor. Actors are typed —
   `Actor(kind: human|agent|engine, id)`, stored `"kind:id"` — and meridian attests
   the kind (FR-8.2); the Lifecycle Engine enforces the rule against the attested
-  kind.
+  kind. Id honesty WITHIN a kind (e.g. FR-3.3's discard-own rule comparing agent
+  ids) is the embedder's enforcement duty — binnacle trusts the attested id; that
+  is the documented boundary of "attribution, not authorization".
 - **I-3** Decision content columns are never UPDATEd after insert.
 - **I-4** Suggestions (queue rows, `Suggester` output) touch nothing outside
   `queue` until a human resolution passes through the Lifecycle Engine.
@@ -222,10 +244,11 @@ radius. The division of responsibility:
   Human resolution of a promote item — all in one transaction: insert the
   long-term row (verbatim copy, or the human's **refined** decision per FR-4.6 —
   possibly consolidating several sources), `PROMOTED_FROM` link(s) to every
-  source, execute any pending supersede claims (links + `superseded` transitions
-  on the long-term targets), mark each source `promoted`, resolve the queue
-  item(s), write all transitions (refined promotions carry `refined: true` in the
-  payload).
+  source, execute any pending supersede claims (SUPERSEDES links whose `from` is
+  the NEW long-term copy — FR-5.2a — plus `superseded` transitions on the
+  long-term targets), mark each source `promoted`, resolve the queue item(s),
+  write all transitions (refined promotions carry `refined: true`; every
+  resolution carries `item_id` in its payload).
 - **Direct long-term record (human, FR-4.4)**: one transaction inserting the
   long-term row with `recorded` + `promoted` transitions.
 - **Discovery sweep** (meridian job): drain the backfill (batch `Embedder.embed`,
@@ -246,8 +269,8 @@ radius. The division of responsibility:
 src/binnacle/
   domain/        models.py (Decision, Ref, Link, Transition, Actor, enums,
                  CandidatePair, Suggestion, projections)  errors.py
-  application/   recorder.py lifecycle.py queue.py query.py discovery.py
-                 archival.py export.py ports.py config.py
+  application/   client.py recorder.py lifecycle.py queue.py query.py
+                 discovery.py archival.py export.py ports.py config.py
   adapters/      postgres_store.py
 ```
 

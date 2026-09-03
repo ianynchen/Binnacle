@@ -40,12 +40,19 @@ declared in `application`; `domain` imports neither.
   (insert_decision, insert_link, insert_transition, set_status, queue ops,
   upsert_embedding) takes `tx`. The Lifecycle Engine owns composition (I-1);
   the store never commits on its own inside a verb.
-- **Idempotent insert** (FR-1.6): `insert_decision` with an existing id returns
-  the existing row untouched (no error, no update).
+- **Idempotent insert** (FR-1.6): `insert_decision` with an existing id compares
+  a content hash — identical returns the existing row untouched; different raises
+  `IdempotencyConflict`. Never an UPDATE.
+- **Concurrency discipline (I-1):** every lifecycle act's transaction opens with
+  `SELECT … FOR UPDATE` on all touched decision rows; queue resolution is a
+  guarded `UPDATE … SET resolved = TRUE WHERE item_id = $1 AND NOT resolved`
+  whose row count must be 1 (double-resolution impossible).
 - **Status is written only alongside its transition** — the store offers a single
   `apply_transition(tx, decision_id, action, actor, reason, payload,
-  new_status | None)` that appends the transition and updates the denormalized
-  status in one statement pair; there is no bare `set_status`.
+  new_status | None)` that appends the transition (recording `new_status` IN the
+  transition row — the computable fold, I-1) and updates the denormalized status
+  in one statement pair; there is no bare `set_status`. Registry changes go
+  through the parallel `domain_transitions` audit table.
 - **Content columns have no UPDATE path at all** (I-3) — the store simply defines
   no method that can touch them post-insert; the perf/regression suite asserts
   this by API inventory.
@@ -70,11 +77,17 @@ src/binnacle/migrations/
 
 `Binnacle.migrate()` runs yoyo programmatically against the configured DSN/pool,
 scoped to the migration package; preflight checks: pgvector extension present
-(error with provisioning hint if not), schema creatable.
+(error with provisioning hint if not), schema creatable, and — post-migration
+and at client construction — `config.embedding_dim` equals the actual
+`VECTOR(n)` column typmod (`EmbeddingDimensionMismatch` otherwise, killing the
+poison-backlog failure class at the door).
 
 ## Acceptance
 
-- Round-trip property tests per table; idempotent-insert test; the
+- Round-trip property tests per table; idempotent-insert tests (identical no-op,
+  divergent `IdempotencyConflict`); a concurrency race test (parallel
+  promote/supersede on one decision — one wins, one gets `InvalidTransition`,
+  status equals fold; double-tap queue resolution resolves once); the
   apply_transition pairing test (status never diverges from transition fold —
   seeded random walks over the state machine, then `status == fold(transitions)`
   asserted for every decision).

@@ -34,9 +34,9 @@ policy.
 - **Evidence ref** — what supports a decision (a tradewind session, spike doc,
   benchmark, URL).
 - **Source** — the system or person that recorded a decision (meridian, portolan, a
-  named human, `binnacle-engine`).
-- **Actor** — the identity performing a lifecycle transition (human id, agent id,
-  `binnacle-engine`).
+  named human, `engine:binnacle`).
+- **Actor** — the identity performing a lifecycle transition, typed `kind:id`
+  (`human:…`, `agent:…`, `engine:binnacle`).
 - **Transition** — one append-only lifecycle event on a decision: (action, actor,
   timestamp, reason). The audit trail is the transition log.
 - **Recommendation** — a *pending* transition awaiting a human: pending-promote,
@@ -76,8 +76,10 @@ policy.
   `domain` (what it is about) and subject refs (what it applies to; absence = general).
   No additional `type`/`category` taxonomy fields exist.
 - **FR-1.6 Idempotent recording.** The caller MAY supply the decision id (UUID);
-  recording the same id twice is a no-op returning the existing decision, so agent
-  retries never duplicate. Absent an id, Binnacle mints one.
+  recording the same id with IDENTICAL content (hash-compared) is a no-op returning
+  the existing decision, so agent retries never duplicate; the same id with
+  DIFFERENT content raises a typed `IdempotencyConflict` — a divergent write is
+  never silently swallowed. Absent an id, Binnacle mints one.
 - **FR-1.7 Backfill.** Recording accepts an optional `decided_at` (when the decision
   was actually made — for importing pre-existing decisions such as historical ADRs)
   distinct from `recorded_at`, which is always system-set. Absent `decided_at`,
@@ -106,13 +108,17 @@ policy.
 - **FR-3.4 Auto-archival (the working-set bound).** A short-term decision untouched
   for a configurable age (default 90 days: `current` with no transitions since, or
   `not_promoted` never re-recommended) receives an automatic `archived` transition
-  (actor `binnacle-engine`, clock-driven — mechanism, not judgment, per FR-7.3).
+  (actor `engine:binnacle`, clock-driven — mechanism, not judgment, per FR-7.3).
   Archived decisions are excluded from default relevance, precedent, and queue reads
-  and from the hot embedding index, but remain fully retrievable
-  (`include_archived`) and re-activatable by a transition (re-recommendation
-  un-archives). Long-term decisions are never auto-archived. This keeps the active
-  working set bounded regardless of total record growth; nothing violates
-  append-only.
+  and from precedent search (via status-filtered joins), but remain fully
+  retrievable
+  (`include_archived`) and re-activatable by a transition. Re-recommendation by
+  ANY actor implicitly reactivates regardless of who recorded the decision
+  (recommending is harmless — it only feeds the gate); both transitions commit
+  together. A decision with OPEN queue items is never archival-eligible — pending human
+  attention stops the clock (which also makes FR-4.3's defer safe indefinitely).
+  Long-term decisions are never auto-archived. This keeps the active working set
+  bounded regardless of total record growth; nothing violates append-only.
 
 ### FR-4 Promotion and the review queue
 - **FR-4.1** Promotion copies a short-term decision into the long-term tier (new id,
@@ -123,8 +129,13 @@ policy.
   recorded). Recommendations from all recommenders land in one review queue.
 - **FR-4.3** The review queue lists pending items (pending-promote, pending-link,
   pending-supersede) with ordering support (age, confidence, domain). A human
-  resolves each item: execute, decline (`not_promoted` for promotions; dismiss for
-  links), or defer. Every resolution is a transition with actor and reason.
+  resolves each item: **execute** it (promote for promote items; apply the
+  suggested link/supersede for link items), **decline/dismiss** it with a reason,
+  or **defer** — which simply means leaving it open (open items block their
+  decision's archival, FR-3.4). Every resolution is a transition carrying
+  `payload.item_id`, actor, and reason. When a decision leaves `current` outside
+  the gate (superseded or discarded), its open queue items are auto-resolved as
+  `voided` in the same transaction — no item is ever left unresolvable.
 - **FR-4.4 Direct long-term recording.** A human MAY record a decision directly into
   the long-term tier as one atomic act (semantically: record + promote, both
   transitions logged). Human-only — the gate is preserved; agents always land in
@@ -155,6 +166,11 @@ policy.
   gate. An agent's recorded claim that its short-term decision supersedes long-term
   D executes at promotion time, by the promoting human, in one act. Short-term ↔
   short-term supersession is ungated (it is the working record).
+- **FR-5.2a Tier symmetry of supersession.** A long-term decision may be
+  superseded only by a long-term decision: directly by a human, or by the
+  promoted long-term copy when a pending claim executes at the gate (the
+  SUPERSEDES link's `from` side is the long-term copy, never the short-term
+  source). Durable policy is never succeeded by working-tier records.
 - **FR-5.3** A supplemented decision remains `current`; reads surface its supplements
   alongside it. Binnacle records relationships between decisions; it does NOT
   adjudicate precedence between them (no rules engine) — meaning is resolved by the
@@ -179,6 +195,8 @@ Consumer → capability map (each row traceable to the FRs below):
   that are unscoped, within the chosen domains. As-of temporal filtering honors
   `valid_from/until`. An optional lexical text filter (substring/keyword over
   scenario/outcome/reasoning) narrows results without invoking semantic search.
+  With no `as_of`, "now" is assumed: decisions whose `valid_until` has passed are
+  excluded from current-status reads by default.
 - **FR-6.2 History:** a decision's full record — content, transitions, relationships,
   predecessor/successor chains — including superseded, declined, and discarded
   entries when explicitly requested.
@@ -191,10 +209,12 @@ Consumer → capability map (each row traceable to the FRs below):
   kind, and actor — serving both "what was decided or promoted since T?" (a human
   catching up, an agent rejoining work) and "everything actor A did" (audit).
 - **FR-6.6 Export:** any filtered decision set (with transitions and relationships)
-  exportable as JSON for backup and portability. Markdown/ADR-file rendering is a v2
-  candidate (§5).
+  exportable as JSON for portability and inspection: decisions with their refs,
+  links, transitions, plus the domains registry (embeddings excluded — derived,
+  rebuildable). An import path is v2; Markdown/ADR-file rendering likewise (§5).
 - **FR-6.7 Projections.** Every read supports a compact projection (id, domain,
-  outcome, status, one-line summary, subject refs) alongside the full record, with
+  tier, status, subject refs, and `outcome` truncated to a configurable length —
+  default 200 chars; no separate summary field exists) alongside the full record, with
   top-N limits — sized for agent context injection, where full reasoning blobs are
   a token budget hazard. Field selection is explicit, never inferred.
 - **FR-6.8 Direct access.** Batch get-by-id (following refs from other systems) and
@@ -211,9 +231,9 @@ Consumer → capability map (each row traceable to the FRs below):
   `Embedder` (text → vector), fulfilled by the embedding service (meridian via
   tradewind's light tier).
 - **FR-7.2** Engine assistance produces only pending queue items: relationship
-  suggestions (supersedes/supplements/conflicts/related, with rationale) over
-  hybrid-search shortlists; promotion-candidate sweeps over short-term `current`
-  decisions; supersession/contradiction flags. `source=binnacle-engine`, never
+  suggestions (supersedes / supplements / unrelated, with rationale — conflict
+  detection remains v2 per §5) over similarity shortlists; promotion-candidate
+  sweeps over short-term `current` decisions. `source=engine:binnacle`, never
   auto-committed.
 - **FR-7.3** Deterministic mechanisms need neither LLM nor human: expiry by clock,
   registry validation, hybrid shortlisting, queue ordering, auto-archival.
