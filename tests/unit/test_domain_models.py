@@ -1,5 +1,6 @@
 """Unit tests for domain models and errors."""
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from binnacle.domain.models import (
     Actor,
     CandidatePair,
     CompactDecision,
+    Decision,
     Link,
     NewDecision,
     OptionConsidered,
@@ -778,3 +780,73 @@ class TestFrozenImmutability:
         """All frozen dataclasses reject attribute assignment."""
         with pytest.raises((AttributeError, ValueError)):
             setattr(obj, attr, None)  # type: ignore
+
+
+class TestAstdictRecursion:
+    """Test that dataclasses.asdict() properly recurses into nested Actor fields."""
+
+    def test_asdict_recurses_transition_actor(self) -> None:
+        """asdict() on Transition with Actor field properly recurses and flattens actor."""
+        now = datetime.now(UTC)
+        actor = Actor(kind="human", id="alice")
+        transition = Transition(
+            transition_id=uuid4(),
+            decision_id=uuid4(),
+            action="recorded",
+            actor=actor,
+            at=now,
+            reason="Initial recording",
+            new_status="current",
+            payload={},
+        )
+        result = asdict(transition)
+        # Verify actor flattens to a nested dict with kind/id keys
+        assert isinstance(result["actor"], dict)
+        assert result["actor"]["kind"] == "human"
+        assert result["actor"]["id"] == "alice"
+        assert result["reason"] == "Initial recording"
+
+    def test_asdict_recurses_queue_item_actor(self) -> None:
+        """asdict() on QueueItem with Actor field properly recurses and flattens actor."""
+        now = datetime.now(UTC)
+        actor = Actor(kind="agent", id="meridian/s1")
+        item = QueueItem(
+            item_id=uuid4(),
+            kind="promote",
+            decision_id=uuid4(),
+            target_id=uuid4(),
+            proposed_by=actor,
+            proposed_at=now,
+            rationale="Ready for promotion",
+            confidence=0.95,
+            resolved=False,
+        )
+        result = asdict(item)
+        # Verify actor flattens to a nested dict with kind/id keys
+        assert isinstance(result["proposed_by"], dict)
+        assert result["proposed_by"]["kind"] == "agent"
+        assert result["proposed_by"]["id"] == "meridian/s1"
+        assert result["rationale"] == "Ready for promotion"
+
+    def test_asdict_recurses_decision_actor(self) -> None:
+        """asdict() on Decision with Actor field properly recurses and flattens actor."""
+        now = datetime.now(UTC)
+        actor = Actor(kind="engine", id="automation/v1")
+        decision = Decision(
+            decision_id=uuid4(),
+            domain="infrastructure",
+            tier="short_term",
+            status="current",
+            scenario="Need to scale",
+            outcome="Use Kubernetes",
+            reasoning="Industry standard",
+            source="architecture-review",
+            recorded_by=actor,
+            recorded_at=now,
+        )
+        result = asdict(decision)
+        # Verify actor flattens to a nested dict with kind/id keys
+        assert isinstance(result["recorded_by"], dict)
+        assert result["recorded_by"]["kind"] == "engine"
+        assert result["recorded_by"]["id"] == "automation/v1"
+        assert result["domain"] == "infrastructure"
