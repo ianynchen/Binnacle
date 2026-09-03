@@ -605,7 +605,7 @@ class TestQueueItem:
     def test_queue_item_creation(self) -> None:
         """QueueItem has required fields."""
         now = datetime.now(UTC)
-        item_id = uuid4()
+        item_id = 42
         decision_id = uuid4()
         target_id = uuid4()
         actor = Actor(kind="human", id="alice")
@@ -727,7 +727,7 @@ class TestFrozenImmutability:
             (Link(from_id=uuid4(), to_id=uuid4(), kind="SUPERSEDES"), "kind"),
             (
                 QueueItem(
-                    item_id=uuid4(),
+                    item_id=1,
                     kind="promote",
                     decision_id=uuid4(),
                     target_id=uuid4(),
@@ -811,7 +811,7 @@ class TestAstdictRecursion:
         now = datetime.now(UTC)
         actor = Actor(kind="agent", id="meridian/s1")
         item = QueueItem(
-            item_id=uuid4(),
+            item_id=7,
             kind="promote",
             decision_id=uuid4(),
             target_id=uuid4(),

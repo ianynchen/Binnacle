@@ -35,6 +35,13 @@ line-length = 100
 python_version = "3.13"
 strict = true
 
+[[tool.mypy.overrides]]
+# yoyo-migrations ships no py.typed marker / stubs (house precedent: narrowly
+# scoped override for a single untyped third-party dependency, not a blanket
+# relaxation of strict mode).
+module = "yoyo.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

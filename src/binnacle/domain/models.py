@@ -231,10 +231,10 @@ class Link:
 class QueueItem:
     """An item in a promotion/linking queue."""
 
-    item_id: UUID
+    item_id: int
     kind: QueueKind
     decision_id: UUID
-    target_id: UUID
+    target_id: UUID | None
     proposed_by: Actor
     proposed_at: datetime
     rationale: str

@@ -105,6 +105,11 @@ CREATE TABLE decisions (
   consequences    TEXT,
   confidence      REAL,                        -- optional triage signal (FR-1.1)
   source          TEXT NOT NULL,
+  content_hash    TEXT NOT NULL,               -- FR-1.6 idempotency key: sha256 of canonical
+                                               -- content JSON (NewDecision.content_hash()),
+                                               -- persisted at insert time so retries compare
+                                               -- against the hash algorithm in effect when the
+                                               -- row was written, never a recomputation
   recorded_by     TEXT NOT NULL,               -- attested actor "kind:id" (I-2)
   decided_at      TIMESTAMPTZ NOT NULL,        -- FR-1.7 (defaults to recorded_at)
   recorded_at     TIMESTAMPTZ NOT NULL,
@@ -182,6 +187,14 @@ CREATE UNIQUE INDEX idx_queue_dedup ON queue(kind, decision_id,
   WHERE NOT resolved;                          -- discovery re-runs cannot duplicate open items
 -- pgvector index (HNSW) on embeddings.embedding, filtered joins exclude archived.
 ```
+
+`decisions.content_hash` (added during Task 3 implementation, not in the original
+schema draft): idempotent insert (FR-1.6) needs a persisted comparison key —
+recomputing the hash from stored columns on every conflict would duplicate
+`NewDecision.content_hash()`'s canonical-JSON logic inside the store and silently
+drift if that formula ever changes. Storing the hash alongside the other
+immutable content columns keeps it a stable fact-at-write-time, consistent with
+I-3.
 
 Structural queries are recursive CTEs over `links` (supersession chains,
 supplement networks) — the same pattern as tradewind's session tree. When a
