@@ -893,10 +893,11 @@ class PostgresStore:
         since: datetime | None = None,
         actions: Sequence[str] | None = None,
         actor: Actor | None = None,
+        limit: int = 500,
     ) -> list[tuple[Transition, CompactDecision]]:
         schema = self._schema
         conditions = []
-        params: dict[str, Any] = {"compact_chars": _DEFAULT_COMPACT_CHARS}
+        params: dict[str, Any] = {"compact_chars": _DEFAULT_COMPACT_CHARS, "limit": limit}
         if since is not None:
             conditions.append("t.at >= %(since)s")
             params["since"] = since
@@ -911,7 +912,7 @@ class PostgresStore:
             "SELECT t.*, d.domain AS d_domain, d.tier AS d_tier, d.status AS d_status, "
             f"LEFT(d.outcome, %(compact_chars)s) AS d_outcome_truncated "
             f"FROM {schema}.transitions t JOIN {schema}.decisions d ON d.decision_id = t.decision_id"
-            f"{where_sql} ORDER BY t.at DESC, t.transition_id DESC"
+            f"{where_sql} ORDER BY t.at DESC, t.transition_id DESC LIMIT %(limit)s"
         )
         async with self._read_conn() as conn:
             cur = await conn.execute(sql, params)
@@ -1106,6 +1107,19 @@ class PostgresStore:
             "AND d.recorded_at < %(cutoff)s "
             f"AND NOT EXISTS (SELECT 1 FROM {schema}.queue q WHERE NOT q.resolved "
             "AND (q.decision_id = d.decision_id OR q.target_id = d.decision_id)) "
+            # FR-3.4 "untouched": `recorded_at` alone doesn't see a later act
+            # (e.g. `reactivate()`) that writes a fresh transition without
+            # changing `recorded_at` — without this, the next sweep would
+            # immediately re-archive a decision a human just reactivated.
+            # `action <> 'recorded'` excludes the row's own origination
+            # transition (not a "touch since" by definition — every row has
+            # exactly one, and relying on it coinciding with `recorded_at`
+            # to stay before `cutoff` would make this fragile rather than
+            # correct-by-construction). idx_trans_decision(decision_id)
+            # supports this per-row lookup.
+            f"AND NOT EXISTS (SELECT 1 FROM {schema}.transitions t "
+            "WHERE t.decision_id = d.decision_id AND t.action <> 'recorded' "
+            "AND t.at >= %(cutoff)s) "
             "ORDER BY d.recorded_at ASC, d.decision_id ASC"
         )
         async with self._read_conn() as conn:

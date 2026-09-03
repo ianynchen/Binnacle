@@ -215,9 +215,10 @@ class Binnacle:
         since: datetime | None = None,
         actions: Sequence[str] | None = None,
         actor: Actor | None = None,
+        limit: int = 500,
     ) -> list[tuple[Transition, CompactDecision]]:
         """FR-6.5: the changes feed. See `StorePort.changes`."""
-        return await self._store.changes(since, actions, actor)
+        return await self._store.changes(since, actions, actor, limit)
 
     async def get_many(self, ids: Sequence[UUID]) -> list[Decision]:
         """FR-6.8: batch get-by-id. See `StorePort.get_many`."""

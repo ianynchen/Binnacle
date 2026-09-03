@@ -513,6 +513,18 @@ class TestChanges:
         assert compact.id == narrative.backoff
         assert compact.status == "superseded"
 
+    async def test_limit_caps_result_count(
+        self, store: PostgresStore, narrative: Narrative
+    ) -> None:
+        """An unbounded `changes()` risks an unbounded response over a long
+        enough transition log -- `limit` (default 500) caps it, most-recent
+        first, same ordering as the unlimited call."""
+        unlimited = await store.changes()
+        assert len(unlimited) > 3
+        limited = await store.changes(limit=3)
+        assert len(limited) == 3
+        assert limited == unlimited[:3]
+
 
 class TestOpenQueue:
     async def test_shakiest_orders_item_confidence_then_decision_confidence_then_default_last(
@@ -698,6 +710,23 @@ class TestArchivalEligible:
             )
         cutoff = narrative.now + timedelta(days=1)
         assert lt.decision_id not in await store.archival_eligible(cutoff=cutoff)
+
+    async def test_transition_at_or_after_cutoff_blocks_eligibility(
+        self, store: PostgresStore, narrative: Narrative
+    ) -> None:
+        """FR-3.4 defines "untouched" as "no transitions since" -- a decision
+        whose `recorded_at` predates the cutoff but that was touched (any
+        transition) at/after it must stay ineligible. Regression: the query
+        used to key on `recorded_at` alone, so a decision reactivated after
+        being auto-archived fell right back into the very next sweep's
+        eligible set, undoing the reactivation."""
+        cutoff = narrative.now
+        assert narrative.general in await store.archival_eligible(cutoff=cutoff + timedelta(days=1))
+        async with store.transaction() as tx:
+            await store.apply_transition(
+                tx, narrative.general, "reactivated", HUMAN.as_str(), None, None, "current"
+            )
+        assert narrative.general not in await store.archival_eligible(cutoff=cutoff)
 
 
 class TestExportRows:

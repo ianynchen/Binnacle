@@ -331,10 +331,11 @@ class StorePort(Protocol):
         since: datetime | None = None,
         actions: Sequence[str] | None = None,
         actor: Actor | None = None,
+        limit: int = 500,
     ) -> list[tuple[Transition, CompactDecision]]:
         """FR-6.5: transitions filtered by window (`since`), `actions`, and
         `actor`, each paired with its decision's compact projection. Most-recent
-        first."""
+        first, capped at `limit`."""
         ...
 
     async def open_queue(
@@ -388,7 +389,11 @@ class StorePort(Protocol):
     async def archival_eligible(self, cutoff: datetime) -> list[UUID]:
         """FR-3.4: short-term `current`/`not_promoted` decisions recorded before
         `cutoff` with no open queue item referencing them (as either the item's
-        decision or its target) — an open item stops the archival clock."""
+        decision or its target) — an open item stops the archival clock — AND
+        no non-`recorded` transition at or after `cutoff` (a later act, e.g.
+        `reactivate()`, also stops the clock even though it doesn't change
+        `recorded_at`; the row's own origination `recorded` transition is
+        excluded, since it isn't a "touch since")."""
         ...
 
     async def export_rows(

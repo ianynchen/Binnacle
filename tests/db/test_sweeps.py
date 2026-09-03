@@ -537,6 +537,51 @@ class TestArchiveStale:
         summary = await archive_stale(store, engine, archival_age_days=90)
         assert summary.archived == 0
 
+    async def test_reactivated_decision_is_not_rearchived_by_the_next_sweep(
+        self, store: PostgresStore, engine: LifecycleEngine
+    ) -> None:
+        """Regression: `archival_eligible` keying only on `recorded_at` (never
+        updated by later acts) meant a decision reactivated after an auto-
+        archive was immediately eligible again on the very next sweep --
+        undoing the reactivation the human just performed. FR-3.4 defines
+        "untouched" as "no transitions since", not merely "recorded before
+        the cutoff"."""
+        now = datetime.now(UTC)
+        stale = await _seed(store, _decision(recorded_at=now - timedelta(days=100)))
+
+        first = await archive_stale(store, engine, archival_age_days=90)
+        assert first.archived == 1
+        archived = await store.get_decision(stale)
+        assert archived is not None
+        assert archived.status == "archived"
+
+        await engine.reactivate(stale, HUMAN)
+        reactivated = await store.get_decision(stale)
+        assert reactivated is not None
+        assert reactivated.status == "current"
+
+        second = await archive_stale(store, engine, archival_age_days=90)
+
+        assert second.archived == 0
+        history = await store.history(stale)
+        assert history.decision.status == "current"
+
+    async def test_untouched_stale_decision_still_archives(
+        self, store: PostgresStore, engine: LifecycleEngine
+    ) -> None:
+        """The other side of the fix above: a decision with no transition
+        since the cutoff (genuinely untouched) must still be archival-
+        eligible -- the new "no transition since cutoff" clause must not
+        over-block."""
+        now = datetime.now(UTC)
+        stale = await _seed(store, _decision(recorded_at=now - timedelta(days=100)))
+
+        summary = await archive_stale(store, engine, archival_age_days=90)
+
+        assert summary.archived == 1
+        history = await store.history(stale)
+        assert history.decision.status == "archived"
+
 
 class TestClientWiring:
     """Thin end-to-end check that `Binnacle`'s three sweep methods delegate

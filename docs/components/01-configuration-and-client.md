@@ -71,7 +71,7 @@ await bn.relevant(domains=None, subject=None, status=("current",), tier=None,
 await bn.history(decision_id)                # content + transitions + links + chains (FR-6.2)
 await bn.precedent(question, domains=None, tiers=None, limit=10, include_dead=True)
 await bn.queue(kinds=None, order="oldest")   # FR-4.3 / FR-6.4
-await bn.changes(since, actions=None, actor=None)                # FR-6.5
+await bn.changes(since, actions=None, actor=None, limit=500)     # FR-6.5
 await bn.get_many(ids) / bn.by_source(source, ...)               # FR-6.8
 await bn.export(filter) -> JSON              # FR-6.6
 
