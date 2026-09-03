@@ -181,15 +181,16 @@ radius. The division of responsibility:
 - **Host (embedder/operator)**: the database, the role, and extensions
   (`CREATE EXTENSION vector` requires elevated rights — a provisioning
   precondition binnacle checks and reports, never performs).
-- **Binnacle**: ships forward-only, ordered SQL migrations (applied one
-  transaction each) versioned in `binnacle.schema_version`, exposed as a single
-  `migrate(conn)` library function guarded by a Postgres advisory lock
-  (concurrent callers: one migrates, others wait). Binnacle never migrates
-  implicitly — **the host decides when to call it** (startup or deploy step).
-- Tooling: a hand-rolled runner (~60 lines, the proven tradewind pattern) over
-  Alembic/yoyo — seven tables, forward-only, zero added dependencies. Switch
-  trigger: adopt Alembic if autogeneration, downgrades, or multi-team migration
-  coordination ever become real needs.
+- **Binnacle**: ships ordered SQL migrations via **yoyo-migrations** (chosen over
+  a hand-rolled runner: rollback steps come for free — incident-driven schema
+  rollback cannot be ruled out, and an untested improvised down-path is worse
+  than a shipped one; yoyo's own version/lock bookkeeping tables are acceptable
+  wherever they land). Every migration ships an apply step and, where physically
+  possible, a rollback step. Exposed as a single `migrate(conn_or_dsn)` library
+  function (yoyo's programmatic API); binnacle never migrates implicitly —
+  **the host decides when to call it** (startup or deploy step). Note: schema
+  rollback ≠ record mutation — decisions/transitions stay append-only (NFR-1);
+  rollback exists for structural incidents only.
 
 `BinnacleConfig` accordingly carries `schema` (name) alongside the DSN/pool.
 
