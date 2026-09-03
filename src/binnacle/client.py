@@ -24,6 +24,7 @@ from uuid import UUID
 from binnacle.adapters.postgres_store import PostgresStore
 from binnacle.application.config import BinnacleConfig
 from binnacle.application.lifecycle import LifecycleEngine
+from binnacle.application.query import precedent as _precedent
 from binnacle.domain.errors import AuthorityViolation, UnknownDomain
 from binnacle.domain.models import (
     Actor,
@@ -33,6 +34,7 @@ from binnacle.domain.models import (
     ExportBundle,
     HistoryRecord,
     NewDecision,
+    PrecedentHit,
     QueueItemView,
     Tier,
     Transition,
@@ -172,6 +174,27 @@ class Binnacle:
     async def history(self, decision_id: UUID) -> HistoryRecord:
         """FR-6.2: a decision's full record. See `StorePort.history`."""
         return await self._store.history(decision_id)
+
+    async def precedent(
+        self,
+        question: str,
+        domains: Sequence[str] | None = None,
+        tiers: Sequence[Tier] | None = None,
+        limit: int = 10,
+        include_dead: bool = True,
+    ) -> list[PrecedentHit]:
+        """FR-6.3: nearest-precedent search for `question`. See
+        `application.query.precedent`."""
+        return await _precedent(
+            self._store,
+            self._config.embedder,
+            question,
+            domains=domains,
+            tiers=tiers,
+            limit=limit,
+            include_dead=include_dead,
+            compact_outcome_chars=self._config.compact_outcome_chars,
+        )
 
     async def queue(
         self,

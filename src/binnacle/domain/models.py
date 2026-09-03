@@ -205,6 +205,19 @@ class CompactDecision:
 
 
 @dataclass(frozen=True)
+class PrecedentHit:
+    """One precedent() result (docs/components/04-query-and-assist.md
+    "precedent()"): a compact projection paired with its k-NN cosine
+    similarity to the query. `decision.status` carries superseded/`not_promoted`
+    history when `include_dead=True` (FR-6.3) — labeled via that field, not
+    hidden; similarity is surfaced as-is, never silently thresholded.
+    """
+
+    decision: CompactDecision
+    similarity: float
+
+
+@dataclass(frozen=True)
 class Transition:
     """A state transition in a decision's lifecycle.
 
