@@ -71,6 +71,7 @@ class LifecycleEngine:
 
         Raises:
             UnknownDomain: `nd.domain` is not registered.
+            InactiveDomain: `nd.domain` is registered but deactivated.
             IdempotencyConflict: `nd.decision_id` exists with different content.
             DecisionNotFound: a declared `supersedes`/`supplements` target does
                 not exist.

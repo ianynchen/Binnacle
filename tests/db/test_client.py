@@ -18,7 +18,7 @@ import pytest
 
 from binnacle.application.config import BinnacleConfig
 from binnacle.client import Binnacle
-from binnacle.domain.errors import AuthorityViolation, UnknownDomain
+from binnacle.domain.errors import AuthorityViolation, InactiveDomain, UnknownDomain
 from binnacle.domain.models import Actor, NewDecision, OptionConsidered, Ref
 from tests.helpers import StubEmbedder
 
@@ -171,6 +171,52 @@ class TestDomainRegistry:
     async def test_deactivate_unknown_domain_raises_unknown_domain(self, bn: Binnacle) -> None:
         with pytest.raises(UnknownDomain):
             await bn.deactivate_domain("nope", actor=HUMAN)
+
+    async def test_record_into_deactivated_domain_raises_inactive_domain(
+        self, bn: Binnacle
+    ) -> None:
+        """Ruling: `deactivate_domain` previously gated nothing -- recording
+        into a deactivated domain silently succeeded. It must now be refused,
+        typed, so callers can branch on it distinctly from `UnknownDomain`."""
+        await bn.deactivate_domain("eng", actor=HUMAN, reason="reorg")
+        with pytest.raises(InactiveDomain):
+            await bn.record(_nd(), actor=AGENT)
+
+    async def test_record_long_term_into_deactivated_domain_raises_inactive_domain(
+        self, bn: Binnacle
+    ) -> None:
+        await bn.deactivate_domain("eng", actor=HUMAN, reason="reorg")
+        with pytest.raises(InactiveDomain):
+            await bn.record_long_term(_nd(), actor=HUMAN)
+
+    async def test_promote_refined_into_deactivated_domain_raises_inactive_domain(
+        self, bn: Binnacle
+    ) -> None:
+        """`promote_refined`'s `refined` decision goes through the same
+        domain-registration check as any other recording (it shares
+        `insert_new_decision`) -- a source recorded before deactivation can
+        still exist, but the refined copy's domain must still be active."""
+        source = await bn.record(_nd(), actor=AGENT)
+        await bn.deactivate_domain("eng", actor=HUMAN, reason="reorg")
+        with pytest.raises(InactiveDomain):
+            await bn.promote_refined([source.decision_id], refined=_nd(), actor=HUMAN)
+
+    async def test_readding_a_deactivated_domain_reactivates_it_for_recording(
+        self, bn: Binnacle
+    ) -> None:
+        """`add_domain` re-registering an existing name is the documented
+        reactivation path (docs/components/01) -- no separate "reactivate"
+        verb exists."""
+        await bn.deactivate_domain("eng", actor=HUMAN, reason="reorg")
+        with pytest.raises(InactiveDomain):
+            await bn.record(_nd(), actor=AGENT)
+
+        await bn.add_domain("eng", "engineering", actor=HUMAN)
+
+        record = next(d for d in await bn.domains() if d.name == "eng")
+        assert record.active is True
+        decision = await bn.record(_nd(), actor=AGENT)
+        assert decision.status == "current"
 
 
 class TestQueryDelegation:

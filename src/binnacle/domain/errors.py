@@ -13,6 +13,10 @@ class UnknownDomain(BinnacleError):
     """Unknown or unregistered domain."""
 
 
+class InactiveDomain(BinnacleError):
+    """Domain is registered but deactivated; recording into it is refused."""
+
+
 class DecisionNotFound(BinnacleError):
     """Decision record not found."""
 

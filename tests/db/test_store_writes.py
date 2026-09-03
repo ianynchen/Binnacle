@@ -363,6 +363,15 @@ class TestDomains:
             assert await store.domain_exists(tx, "eng") is True
             assert await store.domain_exists(tx, "unknown") is False
 
+    async def test_domain_active(self, store: PostgresStore) -> None:
+        async with store.transaction() as tx:
+            assert await store.domain_active(tx, "eng") is True
+            assert await store.domain_active(tx, "unknown") is None
+            await store.upsert_domain(
+                tx, "eng", "engineering", False, HUMAN.as_str(), "domain_deactivated", "reorg"
+            )
+            assert await store.domain_active(tx, "eng") is False
+
     async def test_upsert_domain_updates_existing_row(self, store: PostgresStore) -> None:
         async with store.transaction() as tx:
             await store.upsert_domain(

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from binnacle.application.ports import InsertOutcome, StorePort, Tx
-from binnacle.domain.errors import IdempotencyConflict, UnknownDomain
+from binnacle.domain.errors import IdempotencyConflict, InactiveDomain, UnknownDomain
 from binnacle.domain.models import Actor, Decision, LongStatus, NewDecision, ShortStatus, Tier
 
 
@@ -39,12 +39,19 @@ async def insert_new_decision(
 
     Raises:
         UnknownDomain: `nd.domain` is not a registered domain.
+        InactiveDomain: `nd.domain` is registered but deactivated
+            (`Binnacle.deactivate_domain`) — reactivate via `add_domain`
+            (re-registering an existing name reactivates it) before recording.
         IdempotencyConflict: `nd.decision_id` exists with different content, or
             exists with identical content but a different tier.
     """
-    if not await store.domain_exists(tx, nd.domain):
+    active = await store.domain_active(tx, nd.domain)
+    if active is None:
         msg = f"domain {nd.domain!r} is not registered in the domain registry"
         raise UnknownDomain(msg)
+    if not active:
+        msg = f"domain {nd.domain!r} is deactivated"
+        raise InactiveDomain(msg)
 
     decision_id = nd.decision_id if nd.decision_id is not None else uuid4()
     decision = Decision(

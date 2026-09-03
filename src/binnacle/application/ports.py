@@ -228,6 +228,12 @@ class StorePort(Protocol):
         """Whether `name` is a registered domain (FR-2.1)."""
         ...
 
+    async def domain_active(self, conn_or_tx: Tx, name: str) -> bool | None:
+        """`name`'s registry status: `None` when `name` is not registered at
+        all, else its `active` flag (FR-2.1/2.2) — lets a caller distinguish
+        "unregistered" from "registered but deactivated" in one lookup."""
+        ...
+
     async def upsert_domain(
         self,
         tx: Tx,

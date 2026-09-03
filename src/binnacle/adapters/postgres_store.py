@@ -551,6 +551,14 @@ class PostgresStore:
         cur = await conn.execute(f"SELECT 1 FROM {self._schema}.domains WHERE name = %s", (name,))
         return await cur.fetchone() is not None
 
+    async def domain_active(self, conn_or_tx: Tx, name: str) -> bool | None:
+        conn = self._conn(conn_or_tx)
+        cur = await conn.execute(
+            f"SELECT active FROM {self._schema}.domains WHERE name = %s", (name,)
+        )
+        row = await cur.fetchone()
+        return row["active"] if row is not None else None
+
     async def upsert_domain(
         self,
         tx: Tx,

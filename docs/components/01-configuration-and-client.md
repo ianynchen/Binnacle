@@ -91,14 +91,18 @@ await bn.archive_stale()                     # FR-3.4
   naming the registry (FR-2.1).
 - Registry management: `bn.domains()` / `bn.add_domain(name, desc, actor=human)`
   / `bn.update_domain(name, desc, actor=human)` / `bn.deactivate_domain(...)` —
-  human-only, audited in `domain_transitions` (FR-2.2).
+  human-only, audited in `domain_transitions` (FR-2.2). Recording (`record` /
+  `record_long_term` / `promote_refined`'s `refined`) into a deactivated
+  domain raises `InactiveDomain`; `add_domain` re-registers (and reactivates)
+  an existing name.
 - Verbatim `promote` takes a queue item (everything durable passes through the
   queue); a human promoting an unrecommended decision either self-recommends
   first or uses `promote_refined`/`record_long_term` — deliberate, documented
   ergonomics.
 - Errors are a typed hierarchy (`BinnacleError` root): `UnknownDomain`,
-  `DecisionNotFound`, `InvalidTransition`, `AuthorityViolation`,
-  `IdempotencyConflict` (FR-1.6), `EmbeddingDimensionMismatch`, `ConfigError`.
+  `InactiveDomain`, `DecisionNotFound`, `InvalidTransition`,
+  `AuthorityViolation`, `IdempotencyConflict` (FR-1.6),
+  `EmbeddingDimensionMismatch`, `ConfigError`.
 
 ## Acceptance
 
