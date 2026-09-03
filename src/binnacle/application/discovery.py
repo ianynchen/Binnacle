@@ -114,7 +114,16 @@ def _structurally_related(subject: Decision, other: Decision) -> bool:
       relationship suggestion always proposes the newer decision's stance on
       an earlier one, using `recorded_at` (always present) rather than the
       optional `decided_at`, matching every other sweep cursor's own
-      oldest-first ordering.
+      oldest-first ordering. `recorded_at` is DB-clock-resolution, not
+      globally unique, so a tie is broken by `decision_id`'s string form
+      (smaller wins the "older" side) -- an arbitrary but total, deterministic
+      order, chosen so exactly one of `(A, B)`/`(B, A)` ever survives.
+      Without this, a tie lets `other` pass as `subject`'s elder AND
+      `subject` pass as `other`'s elder in the SAME sweep (each is each
+      other's own k-NN neighbor), producing a reversed-pair duplicate
+      suggestion for every symmetric kind -- most visibly `conflicts`, since
+      accepting both directions doubles the `CONFLICTS_WITH` link's
+      `history().conflicts` entry.
     - status compatibility: both sides are still `current` -- a decision
       already superseded, promoted, or declined is no longer a meaningful
       target for a NEW relationship suggestion (archived/discarded are
@@ -127,7 +136,9 @@ def _structurally_related(subject: Decision, other: Decision) -> bool:
         return False
     if subject.status != "current" or other.status != "current":
         return False
-    if other.recorded_at > subject.recorded_at:
+    other_key = (other.recorded_at, str(other.decision_id))
+    subject_key = (subject.recorded_at, str(subject.decision_id))
+    if other_key > subject_key:
         return False
     return _subject_overlap(subject.refs, other.refs)
 

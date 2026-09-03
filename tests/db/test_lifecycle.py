@@ -1021,14 +1021,66 @@ class TestMatrixResolveConflict:
         with pytest.raises(InvalidResolution):
             await engine.resolve_conflict(item_id, HUMAN)
 
-    async def test_lt_tier_gate_refuses_cross_tier_winner(
+    async def test_lt_winner_discards_st_loser(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Ruling: a long-term winner over a short-term loser has no
+        SUPERSEDES link available (FR-5.2a), but human authority already
+        suffices to discard any short-term decision (FR-3.3) -- so the
+        loser simply loses, discarded rather than superseded."""
+        st_side = await reach(engine, store, "short_term", "current")
+        lt_side = await reach(engine, store, "long_term", "current")
+        stray_item_id = await engine.recommend(st_side.decision_id, RECORDER, "consider")
+        assert stray_item_id is not None
+        item_id = await _enqueue_conflict(store, lt_side.decision_id, st_side.decision_id)
+
+        await engine.resolve_conflict(
+            item_id, HUMAN, winner_id=lt_side.decision_id, reason="lt policy wins"
+        )
+
+        assert await _status(store, lt_side.decision_id) == "current"
+        assert await _status(store, st_side.decision_id) == "discarded"
+        st_hist = await store.history(st_side.decision_id)
+        discarded = next(t for t in st_hist.transitions if t.action == "discarded")
+        assert discarded.reason == "lt policy wins"
+        with pytest.raises(ItemAlreadyResolved):
+            await engine.decline(stray_item_id, HUMAN, "too late")
+
+    async def test_lt_winner_discards_st_loser_falls_back_to_item_rationale(
         self, engine: LifecycleEngine, store: PostgresStore
     ) -> None:
         st_side = await reach(engine, store, "short_term", "current")
         lt_side = await reach(engine, store, "long_term", "current")
+        async with store.transaction() as tx:
+            item_id = await store.enqueue(
+                tx,
+                "conflict",
+                lt_side.decision_id,
+                st_side.decision_id,
+                RECORDER,
+                "the discovery-supplied rationale",
+                0.85,
+            )
+        assert item_id is not None
+
+        await engine.resolve_conflict(item_id, HUMAN, winner_id=lt_side.decision_id)
+
+        st_hist = await store.history(st_side.decision_id)
+        discarded = next(t for t in st_hist.transitions if t.action == "discarded")
+        assert discarded.reason == "the discovery-supplied rationale"
+
+    async def test_st_winner_over_lt_loser_redirects_to_promote_refined(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Ruling: a short-term decision cannot outright beat a long-term one
+        -- the only door into long-term change is the promotion gate."""
+        st_side = await reach(engine, store, "short_term", "current")
+        lt_side = await reach(engine, store, "long_term", "current")
         item_id = await _enqueue_conflict(store, lt_side.decision_id, st_side.decision_id)
-        with pytest.raises(InvalidTransition):
-            await engine.resolve_conflict(item_id, HUMAN, winner_id=lt_side.decision_id)
+        with pytest.raises(InvalidResolution, match="promote_refined"):
+            await engine.resolve_conflict(item_id, HUMAN, winner_id=st_side.decision_id)
+        assert await _status(store, lt_side.decision_id) == "current"
+        assert await _status(store, st_side.decision_id) == "current"
 
     async def test_refined_consolidates_both_short_term_sides(
         self, engine: LifecycleEngine, store: PostgresStore
@@ -1093,21 +1145,22 @@ class TestMatrixResolveConflict:
         assert refined is not None
         assert refined.tier == "long_term"
 
-    async def test_refined_mixed_tier_sides_refused_by_tier_gate(
+    async def test_refined_mixed_tier_sides_redirects_to_promote_refined(
         self, engine: LifecycleEngine, store: PostgresStore
     ) -> None:
-        """FR-5.2a's tier gate is not relaxed for conflict resolution: when the
-        two sides straddle tiers, `refined` is forced long-term (since one side
-        is), but a long-term decision can never directly supersede a
-        short-term one -- so the short-term side's supersede leg is refused
-        exactly like a direct cross-tier `supersede()` call would be."""
+        """Ruling: `refined` cannot consolidate mixed-tier sides -- there is no
+        existing mechanism for one decision to bridge tiers other than
+        promotion, so this redirects to `promote_refined` rather than
+        attempting (and failing) a cross-tier supersede."""
         st_side = await reach(engine, store, "short_term", "current")
         lt_side = await reach(engine, store, "long_term", "current")
         item_id = await _enqueue_conflict(store, lt_side.decision_id, st_side.decision_id)
-        with pytest.raises(InvalidTransition):
+        with pytest.raises(InvalidResolution, match="promote_refined"):
             await engine.resolve_conflict(
                 item_id, HUMAN, refined=_nd(scenario="cannot bridge tiers")
             )
+        assert await _status(store, lt_side.decision_id) == "current"
+        assert await _status(store, st_side.decision_id) == "current"
 
     async def test_accept_path_links_and_transitions_both_sides_without_status_change(
         self, engine: LifecycleEngine, store: PostgresStore
@@ -1161,6 +1214,90 @@ class TestMatrixResolveConflict:
         a_hist = await store.history(a.decision_id)
         assert "dismissed" in [t.action for t in a_hist.transitions]
 
+    async def test_double_accept_after_forced_rediscovery_is_a_safe_link_noop(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """A second `conflict` item for the SAME pair (as a forced
+        rediscovery might produce -- `idx_queue_dedup` only blocks
+        concurrently-OPEN items, so a new one is legal once the first
+        resolves) can be accepted again safely: `insert_link`'s own
+        idempotency makes the second `CONFLICTS_WITH` insert a no-op, even
+        though the second `conflict_accepted` transition pair is appended --
+        harmless, append-only history, not a correctness problem."""
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        first_item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+        await engine.resolve_conflict(first_item_id, HUMAN, reason="first look: both stand")
+
+        second_item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+        await engine.resolve_conflict(second_item_id, HUMAN, reason="re-confirmed: both stand")
+
+        a_hist = await store.history(a.decision_id)
+        b_hist = await store.history(b.decision_id)
+        conflicts_links = [link for link in a_hist.links if link.kind == "CONFLICTS_WITH"]
+        assert len(conflicts_links) == 1
+        assert [d.decision_id for d in a_hist.conflicts] == [b.decision_id]
+        assert [d.decision_id for d in b_hist.conflicts] == [a.decision_id]
+        accepted = [t for t in a_hist.transitions if t.action == "conflict_accepted"]
+        assert len(accepted) == 2
+
+    async def test_concurrent_resolve_conflict_on_same_item_only_one_wins(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Mirrors `test_promote_vs_supersede_race`: two concurrent calls
+        resolving the SAME conflict item must not both succeed -- I-1's
+        guarded `resolve_item` UPDATE (serialized behind the pre-locked
+        decision rows) lets exactly one commit; the loser sees
+        `ItemAlreadyResolved`."""
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+
+        results = await asyncio.gather(
+            engine.resolve_conflict(item_id, HUMAN, winner_id=a.decision_id),
+            engine.resolve_conflict(item_id, HUMAN, winner_id=a.decision_id),
+            return_exceptions=True,
+        )
+
+        outcomes = [r for r in results if not isinstance(r, BaseException)]
+        errors = [r for r in results if isinstance(r, BaseException)]
+        assert len(outcomes) == 1, f"expected exactly one success, got {results!r}"
+        assert len(errors) == 1, f"expected exactly one failure, got {results!r}"
+        assert isinstance(errors[0], ItemAlreadyResolved), (
+            f"expected ItemAlreadyResolved, got {errors[0]!r}"
+        )
+        assert await _status(store, b.decision_id) == "superseded"
+
+    async def test_resolve_conflict_winner_vs_concurrent_supersede_of_loser_race(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Mirrors `test_promote_vs_supersede_race`: `resolve_conflict`
+        declaring `a` the winner over `b` races a DIRECT `supersede()` also
+        targeting `b` -- one must win and commit, the other loses with a
+        typed error, never both, never a partial write."""
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+        rival = await engine.record(_nd(scenario="rival successor"), RECORDER)
+
+        results = await asyncio.gather(
+            engine.resolve_conflict(item_id, HUMAN, winner_id=a.decision_id),
+            engine.supersede(rival.decision_id, b.decision_id, RECORDER),
+            return_exceptions=True,
+        )
+
+        outcomes = [r for r in results if not isinstance(r, BaseException)]
+        errors = [r for r in results if isinstance(r, BaseException)]
+        assert len(outcomes) == 1, f"expected exactly one success, got {results!r}"
+        assert len(errors) == 1, f"expected exactly one failure, got {results!r}"
+        assert isinstance(errors[0], InvalidTransition), (
+            f"expected InvalidTransition, got {errors[0]!r}"
+        )
+
+        hist = await store.history(b.decision_id)
+        assert hist.decision.status == "superseded"
+        assert _fold(hist.transitions) == hist.decision.status
+
 
 # ===========================================================================
 # Property test (Step 2): a random legal walk, then I-1 fold + content check.
@@ -1200,8 +1337,9 @@ class _Tracked:
 
 async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStore) -> None:
     """>=200 acts across >=30 decisions, including promotions, refinements,
-    supersedes, and archivals — asserting I-1 (status == fold(transitions)) and
-    content immutability hold for every decision at the end.
+    supersedes, archivals, and conflict resolutions — asserting I-1
+    (status == fold(transitions)) and content immutability hold for every
+    decision at the end.
 
     Every act attempted here is chosen to be legal FOR THE TEST DRIVER'S OWN
     tracked state — an exception from the engine mid-walk is a genuine bug
@@ -1210,6 +1348,16 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
     """
     rng = random.Random(20260903)
     pool: list[_Tracked] = []
+    # (side_a, side_b, item_id) for currently-open `conflict` items. Both
+    # sides are held OUT of every other candidate generator below while a
+    # conflict is open (see `in_open_conflict`) -- a side going stale
+    # (discarded/superseded/archived by an unrelated act) while still
+    # referenced by an open conflict item is a real, already-covered
+    # scenario (`TestMatrixApplyItem.test_stale_target_status_refused`'s
+    # `resolve_conflict` analogue), but it would make THIS driver's simple
+    # tracked-state model diverge from engine reality, which the module
+    # docstring above rules out for the walk.
+    open_conflicts: list[tuple[_Tracked, _Tracked, int]] = []
     seq_counter = 0
     acts_run = 0
     target_acts = 220
@@ -1291,9 +1439,57 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
         d.status = d.pre_archive_status
         d.pre_archive_status = None
 
+    async def do_seed_conflict(a: _Tracked, b: _Tracked) -> None:
+        async with store.transaction() as tx:
+            item_id = await store.enqueue(
+                tx, "conflict", a.decision_id, b.decision_id, ENGINE_ACTOR, "walk-conflict", 0.8
+            )
+        assert item_id is not None
+        open_conflicts.append((a, b, item_id))
+
+    async def do_resolve_conflict(pair: tuple[_Tracked, _Tracked, int]) -> None:
+        a, b, item_id = pair
+        open_conflicts.remove(pair)
+        # winner/accept only -- `refined` mints a new decision whose id
+        # `resolve_conflict` doesn't return, so tracking its content/tier for
+        # the I-1/I-3 checks below would need a re-fetch; both existing paths
+        # already exercise `conflict_accepted` and the winner-side supersede
+        # under randomized interleaving, which is what this extension is for.
+        #
+        # The winner must be the higher-seq (newer) side: every OTHER
+        # supersede edge in this walk is newer-over-older by construction
+        # (`do_supersede`'s own `newer_same_tier` filter), which is what
+        # keeps the whole graph acyclic without ever needing
+        # `_check_acyclic` to reject a driver-chosen act. A lower-seq winner
+        # here would be free to close a cycle through edges `do_supersede`
+        # created elsewhere -- a genuine `InvalidTransition` the driver
+        # can't distinguish from a real bug, so it's excluded by construction
+        # instead.
+        winner_paths = ["winner_a", "accept"] if a.seq > b.seq else ["winner_b", "accept"]
+        path = rng.choice(winner_paths)
+        if path == "winner_a":
+            await engine.resolve_conflict(item_id, HUMAN, winner_id=a.decision_id)
+            b.status = "superseded"
+            b.open_promote_item = None
+        elif path == "winner_b":
+            await engine.resolve_conflict(item_id, HUMAN, winner_id=b.decision_id)
+            a.status = "superseded"
+            a.open_promote_item = None
+        else:
+            await engine.resolve_conflict(item_id, HUMAN, reason="walk-accept")
+
     while acts_run < target_acts or len(pool) < min_pool:
+        # Both sides of a still-open conflict item are held out of every OTHER
+        # candidate generator below -- an unrelated act changing one side's
+        # status while the conflict item still references it would make
+        # `do_resolve_conflict`'s later winner_id attempt diverge from engine
+        # reality (see `open_conflicts`' own comment above).
+        in_open_conflict = {t.decision_id for a, b, _ in open_conflicts for t in (a, b)}
+
         candidates: list[Callable[[], Awaitable[None]]] = [do_record]
         for d in pool:
+            if d.decision_id in in_open_conflict:
+                continue
             if (
                 d.tier == "short_term"
                 and d.status in ("current", "not_promoted", "archived")
@@ -1319,33 +1515,74 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
         supersedable = [
             d
             for d in pool
-            if (d.tier == "short_term" and d.status in ("current", "not_promoted"))
-            or (d.tier == "long_term" and d.status == "current")
+            if d.decision_id not in in_open_conflict
+            and (
+                (d.tier == "short_term" and d.status in ("current", "not_promoted"))
+                or (d.tier == "long_term" and d.status == "current")
+            )
         ]
         for old in supersedable:
             newer_same_tier = [
-                n for n in pool if n.tier == old.tier and n.seq > old.seq and n is not old
+                n
+                for n in pool
+                if n.tier == old.tier
+                and n.seq > old.seq
+                and n is not old
+                and n.decision_id not in in_open_conflict
             ]
             if newer_same_tier:
                 new = rng.choice(newer_same_tier)
                 candidates.append((lambda old=old, new=new: do_supersede(old, new)))
 
+        # supplement never changes status (no gate at all beyond long-term
+        # authority), so it's safe to sample from the whole pool regardless
+        # of any open conflict.
         if len(pool) >= 2:
             for _ in range(min(5, len(pool))):
                 old, new = rng.sample(pool, 2)
                 candidates.append((lambda old=old, new=new: do_supplement(old, new)))
 
         eligible_sources = [
-            d for d in pool if d.tier == "short_term" and d.status in ("current", "not_promoted")
+            d
+            for d in pool
+            if d.tier == "short_term"
+            and d.status in ("current", "not_promoted")
+            and d.decision_id not in in_open_conflict
         ]
         if eligible_sources:
             k = rng.randint(1, min(3, len(eligible_sources)))
             sources = rng.sample(eligible_sources, k)
             candidates.append(lambda sources=sources: do_promote_refined(sources))
 
+        # conflicts: seed a new open item between two current, same-tier,
+        # not-already-in-conflict decisions; resolve any already-open one
+        # (winner either direction, or accept).
+        conflict_eligible = [
+            d
+            for d in pool
+            if d.status == "current"
+            and d.open_promote_item is None
+            and d.decision_id not in in_open_conflict
+        ]
+        same_tier_pairs = [
+            (d1, d2)
+            for i, d1 in enumerate(conflict_eligible)
+            for d2 in conflict_eligible[i + 1 :]
+            if d1.tier == d2.tier
+        ]
+        if same_tier_pairs:
+            pair_ab = rng.choice(same_tier_pairs)
+            candidates.append(lambda pair_ab=pair_ab: do_seed_conflict(*pair_ab))
+        for open_pair in open_conflicts:
+            candidates.append(lambda open_pair=open_pair: do_resolve_conflict(open_pair))
+
         action = rng.choice(candidates)
         await action()
         acts_run += 1
+
+    # Any conflict item still open at the end is fine left as-is: pendingness
+    # lives only in `queue` rows (I-4) and never affects a decision's status
+    # or content, so the fold/content checks below are unaffected by it.
 
     assert acts_run >= 200
     assert len(pool) >= 30

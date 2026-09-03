@@ -516,6 +516,45 @@ class TestDiscoverConflicts:
         newer_history = await store.history(newer)
         assert newer_history.decision.status == "current"
 
+    async def test_recorded_at_tie_does_not_duplicate_reversed_pair(
+        self, store: PostgresStore, embedder: StubEmbedder, engine: LifecycleEngine
+    ) -> None:
+        """A `recorded_at` tie must not let both (X, Y) and (Y, X) survive the
+        temporal-order structural filter -- `_structurally_related` tie-breaks
+        by `decision_id` so exactly one direction is ever a candidate, for
+        every taxonomy kind. Most visible for `conflicts`, since
+        `CONFLICTS_WITH` is symmetric: accepting both directions would double
+        the `history().conflicts` entry."""
+        now = datetime.now(UTC)
+        x = await _seed(store, _decision(recorded_at=now))
+        y = await _seed(store, _decision(recorded_at=now))
+        await backfill_embeddings(store, embedder, DIM, batch=100)
+
+        suggester = ScriptedSuggester(
+            pair_suggestions=[
+                Suggestion(kind="conflicts", rationale="r", confidence=0.9) for _ in range(2)
+            ]
+        )
+        summary = await discover(
+            store,
+            embedder,
+            suggester,
+            engine,
+            k=5,
+            confidence_floor=0.0,
+            per_sweep_cap=50,
+            archival_age_days=90,
+            batch=100,
+        )
+
+        # Exactly one of (x, y) / (y, x) ever reaches the suggester -- a
+        # regression to the un-tie-broken guard would enqueue both.
+        assert summary.suggestions_enqueued == 1
+        open_items = await store.open_queue(kinds=["conflict"])
+        assert len(open_items) == 1
+        item = open_items[0].item
+        assert {item.decision_id, item.target_id} == {x, y}
+
 
 class TestDiscoverNoSuggester:
     async def test_no_suggester_configured_noops_cleanly(

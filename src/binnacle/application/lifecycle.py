@@ -505,23 +505,30 @@ class LifecycleEngine:
         """Resolve a `conflict` queue item (human only, always — I-2, since a
         conflict may touch a long-term decision), exactly one of three ways:
 
-        - **`winner_id`**: one of the item's two decisions wins outright —
-          executes the existing `supersede` semantics of the winner over the
-          loser (same tier gate, acyclicity check, and auto-void of the
-          loser's open items as a direct `supersede()` call) inside this act's
-          own transaction.
+        - **`winner_id`**: one of the item's two decisions wins outright. When
+          both sides share a tier, this executes the existing `supersede`
+          semantics of the winner over the loser (same tier gate, acyclicity
+          check, and auto-void of the loser's open items as a direct
+          `supersede()` call). Mixed tiers are handled specially, since no
+          long-term decision may directly supersede a short-term one
+          (FR-5.2a): a **long-term winner over a short-term loser** discards
+          the loser instead — human authority already suffices to discard any
+          short-term decision (FR-3.3), so the loser simply loses (reason is
+          the caller's `reason`, falling back to the item's own rationale); a
+          **short-term winner over a long-term loser** is refused with
+          `InvalidResolution` pointing at `promote_refined` — the only door a
+          short-term decision has into long-term change.
         - **`refined`**: a NEW decision (validated like any recording)
-          supersedes BOTH sides. Its tier is forced to `long_term` — recorded
-          via the same `recorded`+`promoted` transition pair as
-          `record_long_term` — when either side is `long_term` (FR-5.2a: a
-          long-term decision is superseded only by a long-term successor);
-          otherwise it is recorded short-term. Superseding a side whose tier
-          doesn't match the refined decision's is refused exactly like a
-          direct cross-tier `supersede()` call would be (the tier gate
-          applies uniformly here too) — no acyclicity check is needed, since
-          the refined decision is a freshly minted id with no existing links
-          this transaction (same reasoning as `_execute_pending_claims`'s
-          long-term copy).
+          supersedes BOTH sides — legal only when the two sides share a tier
+          (recorded via the same `recorded`+`promoted` transition pair as
+          `record_long_term` when that shared tier is `long_term`). Mixed-tier
+          sides are refused with `InvalidResolution` pointing at
+          `promote_refined` (same redirect as the `winner_id` path above —
+          there is no existing mechanism for one decision to consolidate
+          across tiers other than promotion). No acyclicity check is needed
+          for the same-tier case, since the refined decision is a freshly
+          minted id with no existing links this transaction (same reasoning
+          as `_execute_pending_claims`'s long-term copy).
         - **neither** (`reason` required): the conflict is accepted as a
           standing, unresolved relationship rather than adjudicated — inserts
           a `CONFLICTS_WITH` link between the two decisions and a
@@ -533,14 +540,16 @@ class LifecycleEngine:
         Raises:
             AuthorityViolation: `actor.kind != 'human'`.
             InvalidResolution: both `winner_id` and `refined` are given; none
-                of `winner_id`/`refined`/`reason` are given; or `winner_id`
-                names neither of the item's two decisions.
+                of `winner_id`/`refined`/`reason` are given; `winner_id` names
+                neither of the item's two decisions; or a mixed-tier pair was
+                given to `winner_id` (short-term over long-term) or `refined`
+                — both redirect to `promote_refined`.
             ItemNotFound: `item_id` does not exist.
             ItemAlreadyResolved: `item_id` was already resolved.
-            InvalidTransition: the item is not a `conflict` item; or a
-                superseded side is not in a supersedable status, its tier
-                doesn't match the winner's/refined's, or it would create a
-                cycle (`winner_id` path only).
+            InvalidTransition: the item is not a `conflict` item; a same-tier
+                superseded side is not in a supersedable status or would
+                create a cycle (`winner_id` path); or a long-term winner's
+                short-term loser is not in a discardable status.
             DecisionNotFound: the item's decision or target does not exist.
             UnknownDomain: `refined.domain` is not registered.
             InactiveDomain: `refined.domain` is registered but deactivated.
@@ -581,18 +590,52 @@ class LifecycleEngine:
                 loser_id, loser_row, winner_row = (
                     (side_b, row_b, row_a) if winner_id == side_a else (side_a, row_a, row_b)
                 )
-                self._validate_supersede(loser_row, winner_row, "resolve_conflict")
-                await self._check_acyclic(
-                    tx, loser_id, winner_id, loser_row.status, "resolve_conflict"
-                )
-                await self._execute_supersede(tx, winner_id, loser_id, actor, item_id=item_id)
-                await self._void_open_items(tx, loser_id, actor)
+                if winner_row.tier == loser_row.tier:
+                    self._validate_supersede(loser_row, winner_row, "resolve_conflict")
+                    await self._check_acyclic(
+                        tx, loser_id, winner_id, loser_row.status, "resolve_conflict"
+                    )
+                    await self._execute_supersede(tx, winner_id, loser_id, actor, item_id=item_id)
+                    await self._void_open_items(tx, loser_id, actor)
+                elif winner_row.tier == "long_term":
+                    # LT winner, ST loser: no SUPERSEDES link is possible
+                    # (FR-5.2a), but human authority already suffices to
+                    # discard any short-term decision (FR-3.3) -- the loser
+                    # simply loses.
+                    if loser_row.status not in _ST_DISCARDABLE:
+                        msg = "loser is not in a discardable status"
+                        raise InvalidTransition(loser_row.status, "resolve_conflict", msg)
+                    discard_reason = reason if reason is not None else item.rationale
+                    await self._store.apply_transition(
+                        tx,
+                        loser_id,
+                        "discarded",
+                        actor.as_str(),
+                        discard_reason,
+                        {"item_id": item_id},
+                        "discarded",
+                    )
+                    await self._void_open_items(tx, loser_id, actor)
+                else:
+                    # ST winner, LT loser: a short-term decision cannot
+                    # outright beat a long-term one -- the only door into
+                    # long-term change is the promotion gate.
+                    msg = (
+                        "a short-term decision cannot win a conflict against a "
+                        "long-term one; use promote_refined to consolidate into "
+                        "the long-term tier instead"
+                    )
+                    raise InvalidResolution(msg)
                 return
 
             if refined is not None:
-                target_tier: Tier = (
-                    "long_term" if "long_term" in (row_a.tier, row_b.tier) else "short_term"
-                )
+                if row_a.tier != row_b.tier:
+                    msg = (
+                        "refined cannot consolidate mixed-tier sides; use "
+                        "promote_refined to consolidate into the long-term tier instead"
+                    )
+                    raise InvalidResolution(msg)
+                target_tier: Tier = row_a.tier
                 refined_decision, outcome = await insert_new_decision(
                     self._store, tx, refined, actor, target_tier, "current"
                 )
