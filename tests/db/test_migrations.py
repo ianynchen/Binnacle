@@ -78,7 +78,7 @@ async def test_apply_rollback_last_reapply(pg_dsn: str, scratch_schema: str) -> 
     only reason PostgresStore.migrate() itself needs to run first)."""
     store = PostgresStore(dsn=pg_dsn, schema_name=scratch_schema, embedding_dim=768)
     await store.migrate()
-    assert _index_exists(pg_dsn, scratch_schema, "idx_queue_dedup")
+    assert _index_exists(pg_dsn, scratch_schema, "idx_trans_decision")
 
     with tempfile.TemporaryDirectory() as tmp:
         _render_migrations(Path(tmp), scratch_schema, 768)
@@ -89,12 +89,13 @@ async def test_apply_rollback_last_reapply(pg_dsn: str, scratch_schema: str) -> 
             assert len(last_applied) == 1
 
             backend.rollback_migrations(last_applied)
-            assert not _index_exists(pg_dsn, scratch_schema, "idx_queue_dedup")
-            # 0001's tables are untouched by rolling back only 0002.
+            assert not _index_exists(pg_dsn, scratch_schema, "idx_trans_decision")
+            # 0001/0002's tables and indexes are untouched by rolling back only 0003.
             assert EXPECTED_TABLES <= _tables_in(pg_dsn, scratch_schema)
+            assert _index_exists(pg_dsn, scratch_schema, "idx_queue_dedup")
 
             backend.apply_migrations(backend.to_apply(migrations))
-            assert _index_exists(pg_dsn, scratch_schema, "idx_queue_dedup")
+            assert _index_exists(pg_dsn, scratch_schema, "idx_trans_decision")
         finally:
             backend.connection.close()
 

@@ -181,6 +181,13 @@ CREATE INDEX idx_refs_subject ON refs(kind, identifier) WHERE role = 'subject';
 CREATE INDEX idx_links_to     ON links(to_id, kind);
 CREATE INDEX idx_trans_time   ON transitions(at DESC);
 CREATE INDEX idx_trans_actor  ON transitions(actor, at DESC);
+-- Added in migration 0003 (NFR-7 perf seed test found the changes feed
+-- exceeding its p95 target at 10k-decision/100k-transition scale without
+-- these): idx_trans_decision serves history()'s per-decision transition
+-- read (no other index leads with decision_id); idx_trans_action serves
+-- changes()'s action-filtered scans, pre-sorted for its ORDER BY at DESC.
+CREATE INDEX idx_trans_decision ON transitions(decision_id);
+CREATE INDEX idx_trans_action   ON transitions(action, at DESC);
 CREATE INDEX idx_queue_open   ON queue(kind, proposed_at) WHERE NOT resolved;
 CREATE UNIQUE INDEX idx_queue_dedup ON queue(kind, decision_id,
   COALESCE(target_id, '00000000-0000-0000-0000-000000000000'::uuid))
