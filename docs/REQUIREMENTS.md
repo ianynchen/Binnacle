@@ -42,13 +42,16 @@ policy.
 - **Recommendation** — a *pending* transition awaiting a human: pending-promote,
   pending-link, pending-supersede. Recommendations never change the record by
   themselves.
-- **Promotion** — the human-gated copy of a short-term decision into the long-term
-  tier. Copy-only: the source row is never moved or deleted.
+- **Promotion** — the human-gated entry of a decision into the long-term tier:
+  verbatim copy of a short-term source, or a **refined** decision the human authors
+  at the gate from one or more sources (FR-4.6). Sources are never moved, edited,
+  or deleted.
 - **Supersede** — a decision replaces another; the old one remains readable, marked
   superseded, linked to its successor.
 - **Supplement** — a decision qualifies or extends another that remains current;
   expressed as a relationship, never a status.
-- **Precedent search** — hybrid (embedding + graph) retrieval of prior decisions
+- **Precedent search** — embedding-similarity retrieval (with attribute and
+  relationship filters) of prior decisions
   similar to a question at hand, deliberately including superseded and declined
   history.
 
@@ -126,6 +129,17 @@ policy.
   the long-term tier as one atomic act (semantically: record + promote, both
   transitions logged). Human-only — the gate is preserved; agents always land in
   short-term.
+- **FR-4.6 Refinement at the gate.** Instead of a verbatim copy, the promoting
+  human MAY author a **refined** long-term decision from one or MORE short-term
+  sources: content and scope may differ (generalized subject refs — e.g. one
+  service's retry decision becomes policy for all remote calls; amended outcome —
+  e.g. jitter added to the backoff). The refined decision is a NEW decision whose
+  `recorded_by` is the promoting human; every source is marked `promoted` with a
+  `PROMOTED_FROM` link, and the promotion transitions carry `refined: true`.
+  Immutability holds: sources are untouched, and the diff between source and
+  refined content is permanently readable. Consolidating several related
+  short-term decisions into one long-term policy is this same act with multiple
+  sources.
 - **FR-4.5 Decline is not terminal.** A `not_promoted` decision may later be
   re-recommended and promoted; the earlier decline remains visible in its transition
   log. Only `superseded` and `discarded` are terminal.
@@ -228,21 +242,22 @@ Consumer → capability map (each row traceable to the FRs below):
   must be able to prove what was believed, by whom, when.
 - **NFR-2 Honest assistance.** No suggestion, however confident, mutates the record;
   the gate is structural (enforced in the write path), not conventional.
-- **NFR-3 Semantica reuse with a typed boundary.** Reuse `semantica.context`'s
-  `Decision` model, hybrid `DecisionQuery`, embedding pipeline, and `ApacheAgeStore`
-  directly, pinned exact. Binnacle-specific fields (domain, source, status, refs,
-  recommendations) ride in `Decision.metadata`, written and read ONLY through a typed
-  facade — application code never touches raw metadata keys. Semantica's
-  `DecisionRecorder` is wrapped (its Cypher `CREATE` is non-idempotent).
-- **NFR-4 One database.** PostgreSQL with Apache AGE and pgvector — no additional
-  infrastructure (Postgres 18 + AGE 1.8.0 + pgvector verified on the target host).
-  Per-tier storage layout is an ARCHITECTURE decision; the working direction matches
-  each tier's access pattern: **short-term as relational tables** (attribute-filtered
-  queries, trivial archival/export, at most a supersession-chain column) and
-  **long-term as the AGE graph** (supersession/supplement structure queried
-  structurally). Embeddings in pgvector span both tiers. The active working set is
-  kept fast by partial indexes over non-archived rows — never by moving bytes out of
-  the database.
+- **NFR-3 Semantica-informed, dependency-optional.** Semantica's decision subsystem
+  (verified against source v0.6.7) is the design reference, not a mandated
+  dependency: adopt a specific piece only where it demonstrably reduces effort. For
+  the v1 single-store design (NFR-4) that baseline is **zero semantica dependency**
+  — own typed model, own relational store, vector precedent search directly on
+  pgvector. Revisit adoption (its graph stores, hybrid `DecisionQuery`, `conflicts`
+  module) when the §5 v2 triggers fire.
+- **NFR-4 One database, one store.** PostgreSQL with pgvector — no additional
+  infrastructure (Postgres 18 + pgvector verified on the target host). Both tiers
+  live in relational tables; relationships are a `links` table queried with
+  recursive CTEs; embeddings in pgvector span both tiers. **Nothing is stored in
+  two places and every lifecycle act is one transaction in one store.** Apache AGE
+  is deliberately NOT used in v1 (§5): a graph layer would duplicate structure for
+  a marginal ranking boost and shallow traversals a CTE already answers. The active
+  working set is kept fast by partial indexes over non-archived rows — never by
+  moving bytes out of the database.
 - **NFR-5 Scale honesty.** Designed for thousands of *active* decisions, not
   millions: correctness and auditability over throughput. Two mechanisms bound the
   working set as the total record grows without limit: the §5 scope rule (no
@@ -291,17 +306,128 @@ Consumer → capability map (each row traceable to the FRs below):
   from transcripts; Markdown/ADR-file export rendering (JSON export is v1, FR-6.6);
   cold offload of archived short-term decisions to columnar files (e.g. Parquet) —
   unnecessary at design scale (partial indexes already exclude archived rows from
-  hot-path cost) but made trivial by the relational short-term tier if the record
-  ever reaches millions of rows.
+  hot-path cost) but made trivial by the relational tiers if the record ever
+  reaches millions of rows; **graph layer (Apache AGE) with semantica's graph
+  machinery** — adopt when structural queries outgrow recursive CTEs or when
+  graph-context ranking measurably improves precedent quality; the relational
+  record + `links` table can populate a graph at any time.
 
 ## 6. Open Questions
 
-- **OQ-1** Facade serialization details — exact metadata key layout and versioning
-  (`schema_version` key) — settled at ARCHITECTURE time.
-- **OQ-2** Whether the review queue lives as AGE data or a small relational table
-  beside the graph — settled at ARCHITECTURE time against semantica's actual store
-  shapes. (The NFR-4 tier-split direction — relational short-term — strongly implies
-  a relational queue and transitions table; confirm when the schema is drawn.)
-- **OQ-3** Embedding model choice for precedent search (wired via the `Embedder`
-  port; candidate: whatever meridian standardizes on) — deferred until meridian
-  exists; a local/stub embedder suffices for development.
+- **OQ-1** ~~Facade serialization details~~ **Resolved (2026-09-03):** moot — v1
+  has no semantica dependency (NFR-3), hence no facade; the typed model writes
+  directly to the relational schema.
+- **OQ-2** ~~Queue storage~~ **Resolved (2026-09-03):** relational (queue and
+  transitions tables; ARCHITECTURE §4).
+- **OQ-3** Embedding model choice for precedent search — which model turns
+  decision text into vectors for similarity lookup. Deferred deliberately: the
+  vector dimension is fixed in the schema at migration time and changing models
+  means re-embedding the record, so the choice is made once, fleet-wide, when
+  meridian standardizes its embedding model. Wired via the `Embedder` port; a
+  deterministic stub suffices for development and tests.
+
+## 7. The Life of a Decision — a narrative walkthrough
+
+The FRs above are the contract; this section is the story they add up to, following
+one decision end to end and then touring every consumer. (Normative text lives in
+§3/§4; where this section and an FR disagree, the FR wins.)
+
+### 7.1 The moment of recording
+
+An agent inside a meridian workflow, mid-task, settles something: *"portolan
+ingestion calls will retry with exponential backoff, capped at 3 attempts."* It
+records a decision. What it MUST bring: a **domain** from the registry
+(`architecture`), the **scenario** ("how should transient ingestion failures be
+handled?"), the **outcome** (the choice itself), the **reasoning**, and its
+identity (**source** `meridian`, actor `agent:meridian/<session-id>`). What it
+SHOULD bring: **options considered** ("fixed-interval retry — rejected: thundering
+herd on recovery"), a **subject ref** (`component:portolan-ingest` — this governs
+one component, not the world), an **evidence ref** (`session:<id>` — the analysis
+that led here), and a **confidence** (0.8 — its own assessment, used only for
+review triage). Optionally a caller-minted decision id (retry-safe) and, when
+importing an old ADR, the historical `decided_at`.
+
+What lands in storage, atomically: one row in `decisions` (`tier=short`,
+`status=current`), its `refs` rows, and a `recorded` transition carrying actor and
+timestamp. The decision is immediately findable by domain/subject/status queries;
+its embedding is computed asynchronously minutes later, after which it also
+surfaces in precedent search. Nothing about recording waited on an LLM, an
+embedding call, or a human.
+
+### 7.2 The working life (short-term tier)
+
+Later that session the approach changes — batching makes retries unnecessary. The
+agent records the new decision declaring `supersedes` on the old one: the old row
+stays, `status=superseded`, linked to its successor; the working record now tells
+the truth about both the path and the destination. At workflow end, the agent files
+a **promotion recommendation** on the surviving decision ("this is standing policy
+for ingestion, not session detail") — a queue item, nothing more. A malformed
+duplicate it accidentally logged gets `discarded` (its own recording, its own
+session — allowed), hidden from every default view, deleted from none.
+
+Meanwhile the nightly sweep (a meridian job) embeds the backlog, k-NN-shortlists
+lookalikes, has the light-tier LLM classify pairs, and files its own suggestions —
+`proposed_by engine:binnacle`, capped, confidence-floored. It also nominates aging
+short-term decisions that smell like policy. Its output is queue items and only
+queue items.
+
+### 7.3 The gate
+
+You open the review queue (meridian UI, phone, morning coffee). Each pending item
+shows the compact projection — outcome one-liner, domain, subjects, recommender's
+rationale, confidence — sortable oldest-first or shakiest-first. For the backoff
+decision you tap **promote**. In one transaction: a long-term copy is created
+(`PROMOTED_FROM` link back to the source), any pending claim it made against a
+long-term decision executes now (that's the only door such claims can pass
+through), the short-term source flips to `promoted`, the queue item resolves, and
+every step lands as a transition under your name. For another item — an agent's
+"we should use tabs not spaces" — you tap **decline with reason**:
+`not_promoted`, kept as signal, re-recommendable if it ever stops being noise.
+When *you* make a deliberate durable decision yourself, you skip the queue: direct
+long-term recording, one atomic act, still fully transitioned.
+
+### 7.4 The durable life (long-term tier)
+
+Months pass. The backoff decision is consulted dozens of times (§7.6). Then the
+platform adopts a message queue and a new decision **supplements** it ("backoff
+stands; queue-fed ingestion additionally uses dead-lettering") — the original stays
+`current`, readers see it with its supplement alongside. A year on, a redesign
+**supersedes** it outright: new decision, link, `superseded` status — executed by a
+human, because every long-term mutation is. It never vanishes: "why did we ever do
+backoff?" remains answerable, with the original reasoning, evidence, and the whole
+transition history intact. A temporary waiver recorded with `valid_until` simply
+expires by clock — no ceremony. Nothing in either tier is ever edited in place;
+corrections are new decisions that supersede, visibly.
+
+### 7.5 Old age
+
+Short-term decisions nobody touched for 90 days — never recommended, or declined
+and never revisited — are `archived` by the clock sweep: out of default queries,
+the queue, and the hot indexes; still there under `include_archived`; instantly
+revivable by a re-recommendation. The active working set stays small no matter how
+long the record grows. Long-term decisions never auto-archive — a human let each
+one in, and only a human supersedes it out.
+
+### 7.6 Who uses decisions, and how
+
+- **You, curating**: the morning queue; the weekly changes feed ("what was decided
+  or promoted since Monday?"); a domain dossier before a design discussion ("all
+  current architecture decisions touching portolan-ingest — and their history");
+  the audit view when something looks off ("everything `agent:meridian/*` promoted—
+  wait, agents can't promote; prove it" — the transition log does).
+- **Agents, working**: before proposing a design, a precedent check ("prior
+  decisions about retries?") returns the current backoff policy *and* its
+  superseded ancestor — how the thinking evolved is part of the answer. Before a
+  task, a compact top-N relevance pull for its subject and domains is injected
+  into context — one-liners, not reasoning blobs, because context is a budget.
+- **The software factory**: TDD generation pulls the current cross-domain set for
+  its subject — architecture + testing + product decisions governing
+  `order-service`, plus the unscoped generals — as-of today.
+- **Source systems**: portolan lists its own policy decisions (`source=portolan`)
+  to display alongside its curation UI; anything holding a decision id resolves it
+  by batch get.
+- **The engine**: enumerates its own work — unembedded backlog, aging
+  unrecommended decisions, lookalike pairs — through indexed candidate queries. It
+  reads everything and decides nothing.
+- **The record itself**: exported as JSON whenever you want a backup or to hand
+  the decision history to something that will never speak to binnacle.

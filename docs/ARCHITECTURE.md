@@ -1,0 +1,289 @@
+# ARCHITECTURE
+
+Architecture for **Binnacle** (contract: `docs/REQUIREMENTS.md`). Binnacle is a
+Python library — the fleet's decision record and precedent engine — storing
+decisions in one PostgreSQL database (relational tables + pgvector), embedded by
+the meridian service. Semantica's decision subsystem informed the design (NFR-3)
+but is not a dependency in v1.
+
+## 1. Architectural Position
+
+```
+meridian (UI, authn/authz, jobs)          agents (via meridian tools)
+        │ record / recommend / promote / query        │ record / precedent
+        ▼                                             ▼
+   ┌────────────────── binnacle (library) ──────────────────┐
+   │ application: recorder, lifecycle, queue, query,        │
+   │              discovery, archival, export               │
+   │ ports: Suggester, Embedder                             │
+   │ domain: Decision, Ref, Link, Transition, Actor, enums  │
+   │ adapters: postgres store (tables + pgvector)           │
+   └────────────────────────────────────────────────────────┘
+        │ SQL + pgvector (one database, one store)
+        ▼
+   PostgreSQL 18 + pgvector
+```
+
+### 1.1 Principles
+
+1. **The record is the product.** Content immutable, transitions append-only,
+   every change attributed. Anything that would make the record unable to prove
+   "what was believed, by whom, when" is wrong by definition (NFR-1).
+2. **Suggest / mechanize / gate.** LLMs only suggest (never commit), clocks and
+   indexes mechanize what needs no judgment, humans gate every long-term mutation
+   (FR-4, FR-5.2, FR-7). The gate is enforced in the write path, not by convention.
+3. **One store, one transaction.** Every lifecycle act commits atomically in the
+   relational store (NFR-4). Nothing is stored in two places; there is no derived
+   store to diverge. pgvector embeddings are the single exception — derived,
+   asynchronously backfilled, and rebuildable (I-5).
+4. **Own the small core; borrow only what pays** (NFR-3). The decision store is
+   small enough to own outright; semantica remains reference material with named
+   v2 adoption triggers.
+5. **Library, not authority** (FR-8). No daemon, no env/file reads, config-object
+   initialization, multiple instances allowed; meridian authorizes callers,
+   binnacle records attested actors.
+
+## 2. Context (C4 L1)
+
+- **meridian** — the embedder: exposes recording/queue/query over its UI, API, and
+  MCP surface; runs the sweep jobs; fulfills the `Suggester` port via tradewind
+  (light tier) and the `Embedder` port; authenticates callers and attests actor
+  kinds.
+- **Agents** (tradewind sessions) — record decisions and consult precedent through
+  meridian-supplied tools.
+- **Source systems** (portolan, waypoint, sextant tooling) — record their
+  *policy-level* decisions; operational provenance stays home (REQUIREMENTS §5).
+- **PostgreSQL 18 + pgvector** — the one database (verified on the target host).
+
+## 3. Components (C4 L2)
+
+| Component | Responsibility |
+|---|---|
+| **Recorder** | FR-1 write path: registry/ref validation, idempotent insert (caller ids), `decided_at`/`recorded_at`, declared relationships, human-only direct-to-long-term (FR-4.4) and refined/consolidating promotion content (FR-4.6). Enqueues embedding backfill. |
+| **Domain Registry** | FR-2: governed domain list; human-only changes, transition-logged. |
+| **Lifecycle Engine** | FR-3/4/5: the ONLY writer of statuses, links, and transitions; enforces both state machines and the authority rule (I-2); executes promotion, supersession, supplements, archival, re-activation — each as one transaction (I-1). |
+| **Review Queue** | FR-4.3: pending-promote / pending-link / pending-supersede; ordering; resolutions delegate to the Lifecycle Engine. |
+| **Query Service** | FR-6: relevance (subject-or-unscoped, lexical filter), history (CTE over links + transitions), changes feed/audit, projections (full/compact), direct access, candidate enumeration, **precedent search** (pgvector k-NN + attribute filters, both tiers). |
+| **Discovery Pipeline** | FR-7.2/7.4: at backfill, k-NN candidates → structural filters → `Suggester` → capped, confidence-floored queue items. |
+| **Archival Sweep** | FR-3.4: clock-driven `archived` transitions via the Lifecycle Engine. |
+| **Exporter** | FR-6.6: filtered JSON export (decisions + links + transitions). |
+| **Postgres Store** | Schema (§4), migrations, partial indexes, transactions, pgvector operations. The only adapter. |
+
+### 3.1 Ports
+
+```python
+class Suggester(Protocol):
+    async def classify_pairs(self, pairs: list[CandidatePair]) -> list[Suggestion]: ...
+    async def assess_promotion(self, decisions: list[CompactDecision]) -> list[PromotionAssessment]: ...
+
+class Embedder(Protocol):
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+```
+
+Core never constructs an LLM or embedding client (FR-7.1). Meridian fulfills both
+(tradewind light tier; embedding model per OQ-3). Development/test fulfillment: a
+deterministic stub embedder and a scripted suggester.
+
+## 4. Domain Model and Schema
+
+One store, both tiers. Content columns are never UPDATEd (I-3); `status` and
+`links` change only through the Lifecycle Engine.
+
+```sql
+CREATE TABLE decisions (
+  decision_id     UUID PRIMARY KEY,            -- caller-supplied or minted (FR-1.6)
+  tier            TEXT NOT NULL,               -- 'short_term' | 'long_term'
+  domain          TEXT NOT NULL REFERENCES domains(name),
+  status          TEXT NOT NULL,               -- denormalized fold of transitions (I-1)
+  scenario        TEXT NOT NULL,
+  outcome         TEXT NOT NULL,
+  reasoning       TEXT NOT NULL,
+  options_considered JSONB NOT NULL DEFAULT '[]',   -- [{option, why_rejected}]
+  consequences    TEXT,
+  confidence      REAL,                        -- optional triage signal (FR-1.1)
+  source          TEXT NOT NULL,
+  recorded_by     TEXT NOT NULL,               -- attested actor "kind:id" (I-2)
+  decided_at      TIMESTAMPTZ NOT NULL,        -- FR-1.7 (defaults to recorded_at)
+  recorded_at     TIMESTAMPTZ NOT NULL,
+  valid_from      TIMESTAMPTZ,
+  valid_until     TIMESTAMPTZ,
+  metadata        JSONB NOT NULL DEFAULT '{}',
+  schema_version  INT NOT NULL DEFAULT 1
+);
+
+CREATE TABLE links (                           -- all inter-decision relationships
+  from_id UUID NOT NULL REFERENCES decisions(decision_id),
+  to_id   UUID NOT NULL REFERENCES decisions(decision_id),
+  kind    TEXT NOT NULL,                       -- 'SUPERSEDES' | 'SUPPLEMENTS' | 'PROMOTED_FROM'
+  PRIMARY KEY (from_id, kind, to_id)
+);
+
+CREATE TABLE refs (
+  decision_id UUID NOT NULL REFERENCES decisions(decision_id),
+  role        TEXT NOT NULL,                   -- 'subject' | 'evidence'
+  kind        TEXT NOT NULL,                   -- open: component, product, market, session, url, ...
+  identifier  TEXT NOT NULL,
+  note        TEXT,
+  PRIMARY KEY (decision_id, role, kind, identifier)
+);
+
+CREATE TABLE transitions (
+  transition_id BIGSERIAL PRIMARY KEY,
+  decision_id   UUID NOT NULL REFERENCES decisions(decision_id),
+  action        TEXT NOT NULL,                 -- recorded|recommended|promoted|declined|discarded|
+                                               -- superseded|supplement_linked|archived|reactivated|...
+  actor         TEXT NOT NULL,                 -- "kind:id" (kind ∈ human|agent|engine)
+  at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reason        TEXT,
+  payload       JSONB                          -- e.g. {"target": "<decision_id>"}
+);
+
+CREATE TABLE queue (
+  item_id     BIGSERIAL PRIMARY KEY,
+  kind        TEXT NOT NULL,                   -- 'promote' | 'link' | 'supersede'
+  decision_id UUID NOT NULL REFERENCES decisions(decision_id),
+  target_id   UUID REFERENCES decisions(decision_id),
+  proposed_by TEXT NOT NULL, proposed_at TIMESTAMPTZ NOT NULL,
+  rationale   TEXT, confidence REAL,
+  resolved    BOOLEAN NOT NULL DEFAULT FALSE   -- resolution detail lives in transitions
+);
+
+CREATE TABLE domains (
+  name TEXT PRIMARY KEY, description TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE embeddings (
+  decision_id UUID PRIMARY KEY REFERENCES decisions(decision_id),
+  embedding   VECTOR NOT NULL,                 -- dimension fixed by config at migration time
+  embedded_at TIMESTAMPTZ NOT NULL
+);
+
+-- Hot-path partial indexes (NFR-5/NFR-7): active working set only.
+CREATE INDEX idx_dec_active   ON decisions(tier, domain, status) WHERE status NOT IN ('archived','discarded');
+CREATE INDEX idx_refs_subject ON refs(kind, identifier) WHERE role = 'subject';
+CREATE INDEX idx_links_to     ON links(to_id, kind);
+CREATE INDEX idx_trans_time   ON transitions(at DESC);
+CREATE INDEX idx_trans_actor  ON transitions(actor, at DESC);
+CREATE INDEX idx_queue_open   ON queue(kind, proposed_at) WHERE NOT resolved;
+-- pgvector index (HNSW) on embeddings.embedding, filtered joins exclude archived.
+```
+
+Structural queries are recursive CTEs over `links` (supersession chains,
+supplement networks) — the same pattern as tradewind's session tree.
+
+### 4.1 Schema ownership and migrations
+
+All tables live in binnacle's **own PostgreSQL schema** (default `binnacle`,
+configurable) — the ownership boundary inside the shared database: no collisions
+with the embedder's or siblings' tables, per-schema permissions, contained blast
+radius. The division of responsibility:
+
+- **Host (embedder/operator)**: the database, the role, and extensions
+  (`CREATE EXTENSION vector` requires elevated rights — a provisioning
+  precondition binnacle checks and reports, never performs).
+- **Binnacle**: ships forward-only, ordered SQL migrations (applied one
+  transaction each) versioned in `binnacle.schema_version`, exposed as a single
+  `migrate(conn)` library function guarded by a Postgres advisory lock
+  (concurrent callers: one migrates, others wait). Binnacle never migrates
+  implicitly — **the host decides when to call it** (startup or deploy step).
+- Tooling: a hand-rolled runner (~60 lines, the proven tradewind pattern) over
+  Alembic/yoyo — seven tables, forward-only, zero added dependencies. Switch
+  trigger: adopt Alembic if autogeneration, downgrades, or multi-team migration
+  coordination ever become real needs.
+
+`BinnacleConfig` accordingly carries `schema` (name) alongside the DSN/pool.
+
+### 4.2 Invariants
+
+- **I-1** Every `decisions.status` equals the fold of that decision's transitions;
+  the Lifecycle Engine is the only writer of `status`, `links`, and `transitions`,
+  and each act commits them in one transaction.
+- **I-2** Long-term mutations (promotion, superseding or linking a long-term
+  decision) require a **human** actor. Actors are typed —
+  `Actor(kind: human|agent|engine, id)`, stored `"kind:id"` — and meridian attests
+  the kind (FR-8.2); the Lifecycle Engine enforces the rule against the attested
+  kind.
+- **I-3** Decision content columns are never UPDATEd after insert.
+- **I-4** Suggestions (queue rows, `Suggester` output) touch nothing outside
+  `queue` until a human resolution passes through the Lifecycle Engine.
+- **I-5** Recording never awaits the `Embedder` (NFR-7): `embeddings` is a derived,
+  asynchronously backfilled table; a missing embedding degrades precedent recall,
+  never correctness.
+
+## 5. Key Interactions
+
+- **Record (agent)**: validate domain/refs → idempotent insert (`tier='short_term'`,
+  `status='current'`) + `recorded` transition — one transaction. Declared
+  `supersedes` of a short-term target executes in the same transaction (link +
+  `superseded` transition on the target); of a long-term target, files a
+  pending-supersede queue item instead (I-2).
+- **Recommend → promote**: recommendation (any actor) = queue item + transition.
+  Human resolution of a promote item — all in one transaction: insert the
+  long-term row (verbatim copy, or the human's **refined** decision per FR-4.6 —
+  possibly consolidating several sources), `PROMOTED_FROM` link(s) to every
+  source, execute any pending supersede claims (links + `superseded` transitions
+  on the long-term targets), mark each source `promoted`, resolve the queue
+  item(s), write all transitions (refined promotions carry `refined: true` in the
+  payload).
+- **Direct long-term record (human, FR-4.4)**: one transaction inserting the
+  long-term row with `recorded` + `promoted` transitions.
+- **Discovery sweep** (meridian job): drain the backfill (batch `Embedder.embed`,
+  insert `embeddings`) → per newly embedded decision, k-NN + structural filters
+  (FR-7.4) → `Suggester.classify_pairs` → queue items above the confidence floor,
+  capped per sweep.
+- **Archival sweep**: one bulk transaction of clock-eligible `archived` transitions
+  (FR-3.4).
+- **Precedent query**: embed the question (`Embedder`) → pgvector k-NN over
+  non-archived embeddings joined to `decisions` with tier/domain/status filters →
+  hydrate compact or full projections (FR-6.7).
+- **Changes feed / audit**: indexed scans of `transitions` by window/actor/action.
+- **Export**: filtered `decisions` + their `links`, `refs`, `transitions` as JSON.
+
+## 6. Package Layout and Technology
+
+```
+src/binnacle/
+  domain/        models.py (Decision, Ref, Link, Transition, Actor, enums,
+                 CandidatePair, Suggestion, projections)  errors.py
+  application/   recorder.py lifecycle.py queue.py query.py discovery.py
+                 archival.py export.py ports.py config.py
+  adapters/      postgres_store.py
+```
+
+- Python ≥3.13, async-first; pydantic v2 config object (`BinnacleConfig`: DSN or
+  caller-supplied pool, schema name (§4.1), embedding dimension, archival policy,
+  discovery caps/floor; `Suggester`/`Embedder` supplied live,
+  tradewind-broker-style).
+- Postgres driver: **psycopg3 (async)** — first choice for one-dependency
+  parameterized SQL + pgvector adaptation; confirm at plan time (P-1).
+- Layering by import-linter: `adapters → application → domain`; `domain` imports no
+  DB driver. mypy strict; house gates (`scripts/check.sh`) per GUIDELINES.
+- Dependencies: driver + pydantic (+ pgvector adapter helper if needed). **No
+  semantica** (NFR-3).
+
+### 6.1 Decision records
+
+- **DR-1 Single relational store; no graph layer in v1.** Rejected: AGE-as-index
+  (dual writes, divergence class, rebuild tooling for a marginal ranking boost and
+  CTE-answerable traversals). The `links` table + recursive CTEs carry v1
+  structure; a graph can be populated from `decisions + links` at any time (v2
+  trigger in REQUIREMENTS §5).
+- **DR-2 Core is LLM-free and embedder-free** (sextant DR-2 lineage): both arrive
+  as ports; recording never blocks on either (I-5).
+- **DR-3 Semantica-informed, zero-dependency v1** (NFR-3): the store is small
+  enough to own; borrowing would have cost a facade, a pin, and a pre-1.0 churn
+  surface with no offsetting effort saved in the single-store design.
+- **DR-4 One transaction per lifecycle act** (I-1) — the design's integrity
+  primitive; no cross-store ordering rules exist because there is no second store.
+- **DR-5 Attribution, not authorization** — meridian gates callers and attests
+  actor kinds; binnacle refuses only state-machine and authority-rule violations.
+
+## 7. Pending Decisions
+
+- **P-1** Driver confirmation (psycopg3-async vs asyncpg) — settle at plan time
+  with a spike if pgvector adaptation proves awkward.
+- **P-2** Embedding model (OQ-3) — meridian's choice; stub embedder until then;
+  `embeddings.embedding` dimension fixed per deployment at migration time.
+- **P-3** v2 items per REQUIREMENTS §5 — graph layer (AGE + semantica machinery)
+  with its named triggers; conflict detection; scope hierarchy; Parquet offload;
+  Markdown export; transcript extraction.
