@@ -88,8 +88,8 @@ async def precedent(
     if not neighbors:
         return []
 
-    similarity_by_id = dict(neighbors)
-    decisions_by_id = {d.decision_id: d for d in await store.get_many(list(similarity_by_id))}
+    ids = [decision_id for decision_id, _ in neighbors]
+    decisions_by_id = {d.decision_id: d for d in await store.get_many(ids)}
 
     domain_set = set(domains) if domains else None
     tier_set = set(tiers) if tiers else None
