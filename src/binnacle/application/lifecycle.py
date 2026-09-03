@@ -347,7 +347,7 @@ class LifecycleEngine:
             old_row = _require(locked, old_id)
             new_row = _require(locked, new_id)
             self._validate_supersede(old_row, new_row, "supersede")
-            await self._check_acyclic(old_id, new_id, old_row.status, "supersede")
+            await self._check_acyclic(tx, old_id, new_id, old_row.status, "supersede")
             await self._execute_supersede(tx, new_id, old_id, actor, item_id=None)
             await self._void_open_items(tx, old_id, actor)
 
@@ -461,7 +461,7 @@ class LifecycleEngine:
             new_row = _require(locked, new_id)
             if item.kind == "supersede":
                 self._validate_supersede(old_row, new_row, "apply_item")
-                await self._check_acyclic(old_id, new_id, old_row.status, "apply_item")
+                await self._check_acyclic(tx, old_id, new_id, old_row.status, "apply_item")
                 await self._execute_supersede(tx, new_id, old_id, actor, item_id=item_id)
             else:
                 await self._execute_supplement(tx, new_id, old_id, actor, item_id=item_id)
@@ -556,13 +556,19 @@ class LifecycleEngine:
             raise InvalidTransition(old_row.status, action, msg)
 
     async def _check_acyclic(
-        self, old_id: UUID, new_id: UUID, old_status: str, action: str
+        self, tx: Tx, old_id: UUID, new_id: UUID, old_status: str, action: str
     ) -> None:
         """Raise if linking `new_id` as `old_id`'s successor would close a cycle:
         true exactly when `old_id` already (transitively) supersedes `new_id` —
-        i.e. `new_id` is already one of `old_id`'s predecessors."""
-        history = await self._store.history(old_id)
-        if new_id in {d.decision_id for d in history.predecessors}:
+        i.e. `new_id` is already one of `old_id`'s predecessors.
+
+        Uses `predecessor_chain` (tx-scoped) rather than `history` (a second
+        pooled connection): under concurrent supersede-family acts, borrowing a
+        second connection per call while the act's own transaction already holds
+        one can exhaust a small pool (`PoolTimeout`) well before any row lock
+        would ever contend."""
+        predecessors = await self._store.predecessor_chain(tx, old_id)
+        if new_id in predecessors:
             msg = "would create a supersession cycle"
             raise InvalidTransition(old_status, action, msg)
 
@@ -653,7 +659,7 @@ class LifecycleEngine:
         if target_row.status not in _ST_SUPERSEDABLE:
             msg = "declared supersede target is not in a supersedable status"
             raise InvalidTransition(target_row.status, "supersede", msg)
-        await self._check_acyclic(target_id, new_id, target_row.status, "supersede")
+        await self._check_acyclic(tx, target_id, new_id, target_row.status, "supersede")
         await self._execute_supersede(tx, new_id, target_id, actor, item_id=None)
 
     async def _link_declared_supplement(

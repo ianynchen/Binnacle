@@ -345,6 +345,22 @@ class PostgresStore:
             async for row in cur
         }
 
+    async def predecessor_chain(self, tx: Tx, decision_id: UUID) -> list[UUID]:
+        conn = self._conn(tx)
+        cur = await conn.execute(
+            f"WITH RECURSIVE pred AS ("
+            f"  SELECT to_id AS decision_id, 1 AS depth, ARRAY[from_id, to_id] AS visited"
+            f"  FROM {self._schema}.links WHERE from_id = %(id)s AND kind = 'SUPERSEDES'"
+            "  UNION ALL"
+            f"  SELECT l.to_id, p.depth + 1, p.visited || l.to_id"
+            f"  FROM {self._schema}.links l JOIN pred p ON l.from_id = p.decision_id"
+            "   WHERE l.kind = 'SUPERSEDES' AND NOT (l.to_id = ANY(p.visited))"
+            "   AND p.depth < %(max_depth)s"
+            ") SELECT decision_id FROM pred ORDER BY depth",
+            {"id": decision_id, "max_depth": _HISTORY_MAX_DEPTH},
+        )
+        return [row["decision_id"] async for row in cur]
+
     async def insert_decision(self, tx: Tx, d: Decision, content_hash: str) -> InsertOutcome:
         conn = self._conn(tx)
         decided_at = d.decided_at if d.decided_at is not None else d.recorded_at

@@ -262,6 +262,49 @@ class TestLinksAndRefs:
             await store.insert_refs(tx, d.decision_id, [])
 
 
+class TestPredecessorChain:
+    """Executed on the caller's own `tx` (no second pooled connection) — the
+    Lifecycle Engine's acyclicity check depends on that (see lifecycle.py's
+    `_check_acyclic`), so this exercises the same recursive CTE shape as
+    `history()`'s predecessor chain, directly at the store layer."""
+
+    async def test_no_outgoing_links_is_empty(self, store: PostgresStore) -> None:
+        d = _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, d, "h1")
+            chain = await store.predecessor_chain(tx, d.decision_id)
+        assert chain == []
+
+    async def test_single_hop(self, store: PostgresStore) -> None:
+        a, b = _decision(), _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, a, "h1")
+            await store.insert_decision(tx, b, "h2")
+            await store.insert_link(tx, a.decision_id, b.decision_id, "SUPERSEDES")
+            chain = await store.predecessor_chain(tx, a.decision_id)
+        assert chain == [b.decision_id]
+
+    async def test_transitive_chain_ordered_nearest_first(self, store: PostgresStore) -> None:
+        a, b, c = _decision(), _decision(), _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, a, "h1")
+            await store.insert_decision(tx, b, "h2")
+            await store.insert_decision(tx, c, "h3")
+            await store.insert_link(tx, a.decision_id, b.decision_id, "SUPERSEDES")  # A -> B
+            await store.insert_link(tx, b.decision_id, c.decision_id, "SUPERSEDES")  # B -> C
+            chain = await store.predecessor_chain(tx, a.decision_id)
+        assert chain == [b.decision_id, c.decision_id]
+
+    async def test_non_supersedes_links_are_ignored(self, store: PostgresStore) -> None:
+        a, b = _decision(), _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, a, "h1")
+            await store.insert_decision(tx, b, "h2")
+            await store.insert_link(tx, a.decision_id, b.decision_id, "SUPPLEMENTS")
+            chain = await store.predecessor_chain(tx, a.decision_id)
+        assert chain == []
+
+
 class TestDomains:
     async def test_domain_exists(self, store: PostgresStore) -> None:
         async with store.transaction() as tx:

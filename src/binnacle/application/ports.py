@@ -88,6 +88,20 @@ class StorePort(Protocol):
         """
         ...
 
+    async def predecessor_chain(self, tx: Tx, decision_id: UUID) -> list[UUID]:
+        """Every decision `decision_id` itself (transitively) supersedes, nearest
+        first: a recursive walk over `links` kind SUPERSEDES starting from
+        `from_id = decision_id`, the same shape as `history()`'s predecessor
+        chain but executed on `tx`'s own connection.
+
+        Exists so the Lifecycle Engine's acyclicity check (before linking a new
+        SUPERSEDES edge) can run INSIDE the act's already-open transaction
+        instead of borrowing a second pooled connection via `history()` — under
+        concurrent acts, a second connection-per-call exhausts a small pool
+        (I-1's serialization is supposed to come from row locks, not from
+        starving the pool)."""
+        ...
+
     async def insert_decision(self, tx: Tx, d: Decision, content_hash: str) -> InsertOutcome:
         """Insert `d`, never UPDATE (I-3).
 

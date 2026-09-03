@@ -89,6 +89,43 @@ def _fold(transitions: list[Transition]) -> str | None:
     return non_null[-1] if non_null else None
 
 
+# All content columns (I-3) except `status` (the whole point of the walk) and
+# the relational `supersedes`/`supplements` projections, which legitimately
+# grow over a decision's life as later acts add NEW links referencing it
+# (append-only — not a content mutation).
+_CONTENT_FIELDS = (
+    "domain",
+    "scenario",
+    "outcome",
+    "reasoning",
+    "source",
+    "recorded_by",
+    "recorded_at",
+    "decided_at",
+    "options_considered",
+    "consequences",
+    "confidence",
+    "valid_from",
+    "valid_until",
+    "refs",
+    "metadata",
+)
+
+
+def _content_snapshot(d: Decision) -> dict[str, Any]:
+    return {field: getattr(d, field) for field in _CONTENT_FIELDS}
+
+
+async def _snapshot(store: PostgresStore, decision_id: UUID) -> dict[str, Any]:
+    """The ground-truth persisted content, fetched fresh rather than trusted
+    from an insert-time call's return value — `decided_at` in particular can
+    differ: the schema column is NOT NULL and defaults to `recorded_at` at
+    insert time even when the caller passed `decided_at=None`."""
+    d = await store.get_decision(decision_id)
+    assert d is not None
+    return _content_snapshot(d)
+
+
 async def _status(store: PostgresStore, decision_id: UUID) -> str:
     d = await store.get_decision(decision_id)
     assert d is not None
@@ -324,6 +361,29 @@ class TestMatrixRecommend:
 
         with pytest.raises(DecisionNotFound):
             await engine.recommend(uuid4(), RECORDER, "why")
+
+    async def test_second_recommend_dedups_the_item_but_still_logs_the_transition(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Structural dedup (`idx_queue_dedup`) means a second open `promote`
+        item is never created, but FR-3.1's transition log is an audit trail of
+        every act attempted — the second `recommended` transition still lands."""
+        d = await engine.record(_nd(), RECORDER)
+        first = await engine.recommend(d.decision_id, RECORDER, "first look")
+        assert first is not None
+
+        second = await engine.recommend(d.decision_id, HUMAN, "second look")
+        assert second is None
+
+        hist = await store.history(d.decision_id)
+        recommended = [t for t in hist.transitions if t.action == "recommended"]
+        assert len(recommended) == 2
+        assert [t.reason for t in recommended] == ["first look", "second look"]
+
+        open_items = await store.open_queue(kinds=["promote"])
+        matching = [v for v in open_items if v.item.decision_id == d.decision_id]
+        assert len(matching) == 1
+        assert matching[0].item.item_id == first
 
 
 # ===========================================================================
@@ -863,18 +923,24 @@ class TestMatrixDismissItem:
 
 class _Tracked:
     __slots__ = (
+        "content",
         "decision_id",
         "open_promote_item",
         "pre_archive_status",
         "recorded_by",
-        "scenario",
         "seq",
         "status",
         "tier",
     )
 
     def __init__(
-        self, decision_id: UUID, tier: str, status: str, recorded_by: Actor, seq: int, scenario: str
+        self,
+        decision_id: UUID,
+        tier: str,
+        status: str,
+        recorded_by: Actor,
+        seq: int,
+        content: dict[str, Any],
     ) -> None:
         self.decision_id = decision_id
         self.tier = tier
@@ -883,7 +949,7 @@ class _Tracked:
         self.seq = seq
         self.open_promote_item: int | None = None
         self.pre_archive_status: str | None = None
-        self.scenario = scenario
+        self.content = content
 
 
 async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStore) -> None:
@@ -908,7 +974,8 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
         actor = rng.choice([HUMAN, RECORDER])
         scenario = f"walk-scenario-{seq_counter}"
         d = await engine.record(_nd(scenario=scenario), actor)
-        pool.append(_Tracked(d.decision_id, "short_term", "current", actor, seq_counter, scenario))
+        content = await _snapshot(store, d.decision_id)
+        pool.append(_Tracked(d.decision_id, "short_term", "current", actor, seq_counter, content))
         seq_counter += 1
 
     async def do_recommend(d: _Tracked) -> None:
@@ -926,9 +993,8 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
         lt = await engine.promote(d.open_promote_item, HUMAN)
         d.status = "promoted"
         d.open_promote_item = None
-        pool.append(
-            _Tracked(lt.decision_id, "long_term", "current", HUMAN, seq_counter, lt.scenario)
-        )
+        content = await _snapshot(store, lt.decision_id)
+        pool.append(_Tracked(lt.decision_id, "long_term", "current", HUMAN, seq_counter, content))
         seq_counter += 1
 
     async def do_promote_refined(sources: list[_Tracked]) -> None:
@@ -940,7 +1006,8 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
         for s in sources:
             s.status = "promoted"
             s.open_promote_item = None
-        pool.append(_Tracked(lt.decision_id, "long_term", "current", HUMAN, seq_counter, scenario))
+        content = await _snapshot(store, lt.decision_id)
+        pool.append(_Tracked(lt.decision_id, "long_term", "current", HUMAN, seq_counter, content))
         seq_counter += 1
 
     async def do_decline(d: _Tracked) -> None:
@@ -1046,9 +1113,10 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
         assert _fold(hist.transitions) == tracked.status, (
             f"fold(transitions) != decisions.status for {tracked.decision_id} (I-1 violated)"
         )
-        assert hist.decision.scenario == tracked.scenario
-        assert hist.decision.domain == "eng"
         assert hist.decision.tier == tracked.tier
+        assert _content_snapshot(hist.decision) == tracked.content, (
+            f"content columns mutated for {tracked.decision_id} (I-3 violated)"
+        )
 
 
 # ===========================================================================
@@ -1134,6 +1202,35 @@ class TestTargeted:
         await engine.supersede(a.decision_id, b.decision_id, RECORDER)  # A supersedes B
         with pytest.raises(InvalidTransition):
             await engine.supersede(b.decision_id, a.decision_id, RECORDER)  # B supersedes A
+
+    async def test_concurrent_supersedes_on_disjoint_decisions_do_not_exhaust_pool(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """`_check_acyclic`'s walk must run on the act's OWN transaction
+        connection, not borrow a second pooled one — `PostgresStore`'s pool is
+        `max_size=4`, so N >= pool-size fully independent, disjoint concurrent
+        `supersede()` calls would each hold one connection (via their own
+        `transaction()`) and then block forever waiting for a second one to run
+        the acyclicity check, since every other concurrent call is doing the
+        same thing. Nothing here contends on a row lock (every pair is
+        disjoint), so this isolates pool exhaustion specifically — a hang here
+        means `wait_for` times out instead of the test merely being slow."""
+        pairs = []
+        for _ in range(6):
+            old = await engine.record(_nd(scenario="disjoint old"), RECORDER)
+            new = await engine.record(_nd(scenario="disjoint new"), RECORDER)
+            pairs.append((old, new))
+
+        async def supersede_pair(old: Decision, new: Decision) -> None:
+            await engine.supersede(new.decision_id, old.decision_id, RECORDER)
+
+        await asyncio.wait_for(
+            asyncio.gather(*(supersede_pair(old, new) for old, new in pairs)),
+            timeout=10,
+        )
+
+        for old, _new in pairs:
+            assert await _status(store, old.decision_id) == "superseded"
 
     async def test_promote_vs_supersede_race(
         self, engine: LifecycleEngine, store: PostgresStore
