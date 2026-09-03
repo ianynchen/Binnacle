@@ -14,8 +14,8 @@ ActorKind = Literal["human", "agent", "engine"]
 Tier = Literal["short_term", "long_term"]
 ShortStatus = Literal["current", "promoted", "not_promoted", "superseded", "discarded", "archived"]
 LongStatus = Literal["current", "superseded"]
-LinkKind = Literal["SUPERSEDES", "SUPPLEMENTS", "PROMOTED_FROM"]
-QueueKind = Literal["promote", "link", "supersede"]
+LinkKind = Literal["SUPERSEDES", "SUPPLEMENTS", "PROMOTED_FROM", "CONFLICTS_WITH"]
+QueueKind = Literal["promote", "link", "supersede", "conflict"]
 RefRole = Literal["subject", "evidence"]
 TransitionAction = Literal[
     "recorded",
@@ -29,6 +29,7 @@ TransitionAction = Literal[
     "reactivated",
     "voided",
     "dismissed",
+    "conflict_accepted",
 ]
 
 
@@ -281,7 +282,7 @@ class CandidatePair:
 class Suggestion:
     """A linking suggestion between decisions."""
 
-    kind: Literal["supersedes", "supplements", "unrelated"]
+    kind: Literal["supersedes", "supplements", "conflicts", "unrelated"]
     rationale: str
     confidence: float
 
@@ -309,9 +310,11 @@ class DomainRecord:
 class HistoryRecord:
     """A decision's full record (FR-6.2): content and refs (on `decision`),
     transitions in order, every link touching the decision, both supersession
-    chains (recursive over `links` kind SUPERSEDES), and supplements — decisions
-    that supplement this one (FR-5.3). Includes archived/discarded entries
-    throughout; history hides nothing.
+    chains (recursive over `links` kind SUPERSEDES), supplements — decisions
+    that supplement this one (FR-5.3) — and conflicts — decisions this one has
+    an acknowledged `CONFLICTS_WITH` link with, from `resolve_conflict`'s accept
+    path (FR-7.2). Includes archived/discarded entries throughout; history hides
+    nothing.
     """
 
     decision: Decision
@@ -320,6 +323,7 @@ class HistoryRecord:
     predecessors: list[Decision]
     successors: list[Decision]
     supplements: list[Decision]
+    conflicts: list[Decision]
 
 
 @dataclass(frozen=True)

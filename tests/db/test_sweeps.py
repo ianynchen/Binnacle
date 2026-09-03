@@ -388,6 +388,135 @@ class TestDiscoverCap:
         assert d1 not in remaining
 
 
+class TestDiscoverConflicts:
+    """FR-7.2's `conflicts` taxonomy branch: enqueues kind='conflict' items,
+    subject to the same floor/cap/dedup machinery as `supersedes`/`supplements`
+    (only the taxonomy->queue-kind mapping is new), and the same both-current
+    structural filter every kind already shares (`_structurally_related`) -- a
+    superseded side is never a live conflict target."""
+
+    async def _seed_pair(self, store: PostgresStore, embedder: StubEmbedder) -> tuple[UUID, UUID]:
+        now = datetime.now(UTC)
+        old = await _seed(store, _decision(recorded_at=now - timedelta(days=2)))
+        new = await _seed(store, _decision(recorded_at=now - timedelta(days=1)))
+        await backfill_embeddings(store, embedder, DIM, batch=100)
+        return old, new
+
+    async def test_conflicts_classification_enqueues_conflict_item(
+        self, store: PostgresStore, embedder: StubEmbedder, engine: LifecycleEngine
+    ) -> None:
+        old, new = await self._seed_pair(store, embedder)
+        suggester = ScriptedSuggester(
+            pair_suggestions=[Suggestion(kind="conflicts", rationale="contradicts", confidence=0.9)]
+        )
+
+        summary = await discover(
+            store,
+            embedder,
+            suggester,
+            engine,
+            k=5,
+            confidence_floor=0.0,
+            per_sweep_cap=50,
+            archival_age_days=90,
+            batch=100,
+        )
+
+        assert summary.suggestions_enqueued == 1
+        open_items = await store.open_queue(kinds=["conflict"])
+        assert len(open_items) == 1
+        item = open_items[0].item
+        assert item.decision_id == new
+        assert item.target_id == old
+        assert item.proposed_by == ENGINE_ACTOR
+
+    async def test_dedup_on_forced_rerun_is_tolerated_and_counted(
+        self,
+        store: PostgresStore,
+        embedder: StubEmbedder,
+        engine: LifecycleEngine,
+        pg_dsn: str,
+        scratch_schema: str,
+    ) -> None:
+        _old, new = await self._seed_pair(store, embedder)
+        first_suggester = ScriptedSuggester(
+            pair_suggestions=[Suggestion(kind="conflicts", rationale="r", confidence=0.9)]
+        )
+        first = await discover(
+            store,
+            embedder,
+            first_suggester,
+            engine,
+            k=5,
+            confidence_floor=0.0,
+            per_sweep_cap=100,
+            archival_age_days=90,
+            batch=100,
+        )
+        assert first.suggestions_enqueued == 1
+
+        await _reset_discovered_at(pg_dsn, scratch_schema, new)
+        second_suggester = ScriptedSuggester(
+            pair_suggestions=[Suggestion(kind="conflicts", rationale="r", confidence=0.9)]
+        )
+        second = await discover(
+            store,
+            embedder,
+            second_suggester,
+            engine,
+            k=5,
+            confidence_floor=0.0,
+            per_sweep_cap=100,
+            archival_age_days=90,
+            batch=100,
+        )
+
+        assert second.suggestions_enqueued == 0
+        assert second.suggestions_deduped == 1
+        assert await store.undiscovered(100) == []
+        open_items = await store.open_queue(kinds=["conflict"])
+        assert len([i for i in open_items if i.item.decision_id == new]) == 1
+
+    async def test_conflict_requires_both_sides_current(
+        self, store: PostgresStore, embedder: StubEmbedder, engine: LifecycleEngine
+    ) -> None:
+        """A side that's already superseded is not a live conflict target --
+        `_structurally_related`'s existing both-`current` status-compat filter
+        (shared by every taxonomy kind) keeps it from ever reaching the
+        `Suggester`, so no 'conflict' item can be enqueued against it."""
+        now = datetime.now(UTC)
+        old = await _seed(store, _decision(recorded_at=now - timedelta(days=2)))
+        newer = await _seed(store, _decision(recorded_at=now - timedelta(days=1)))
+        await backfill_embeddings(store, embedder, DIM, batch=100)
+
+        # Superseded AFTER embedding, and its successor is never itself
+        # embedded/backfilled -- so it stays invisible to discovery entirely,
+        # isolating the assertion to `old`'s now-stale status.
+        successor = await _seed(store, _decision(recorded_at=now))
+        await engine.supersede(successor, old, AGENT)
+
+        suggester = ScriptedSuggester(
+            pair_suggestions=[Suggestion(kind="conflicts", rationale="r", confidence=0.9)]
+        )
+        summary = await discover(
+            store,
+            embedder,
+            suggester,
+            engine,
+            k=5,
+            confidence_floor=0.0,
+            per_sweep_cap=50,
+            archival_age_days=90,
+            batch=100,
+        )
+
+        assert summary.suggestions_enqueued == 0
+        assert suggester.classify_pairs_calls == []
+        assert await store.open_queue(kinds=["conflict"]) == []
+        newer_history = await store.history(newer)
+        assert newer_history.decision.status == "current"
+
+
 class TestDiscoverNoSuggester:
     async def test_no_suggester_configured_noops_cleanly(
         self, store: PostgresStore, embedder: StubEmbedder, engine: LifecycleEngine

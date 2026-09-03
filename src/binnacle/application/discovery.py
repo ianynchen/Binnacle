@@ -38,7 +38,11 @@ def _embedding_text(d: Decision) -> str:
 
 
 # FR-7.4 taxonomy -> queue kind. 'unrelated' maps to nothing (no queue item).
-_QUEUE_KIND: dict[str, QueueKind] = {"supersedes": "supersede", "supplements": "link"}
+_QUEUE_KIND: dict[str, QueueKind] = {
+    "supersedes": "supersede",
+    "supplements": "link",
+    "conflicts": "conflict",
+}
 
 
 async def backfill_embeddings(
@@ -114,7 +118,10 @@ def _structurally_related(subject: Decision, other: Decision) -> bool:
     - status compatibility: both sides are still `current` -- a decision
       already superseded, promoted, or declined is no longer a meaningful
       target for a NEW relationship suggestion (archived/discarded are
-      already excluded upstream by `store.knn`'s own join).
+      already excluded upstream by `store.knn`'s own join). This is also
+      exactly the "both alive" rule a `conflicts` classification needs (a
+      superseded or archived side is not a live conflict) -- the same filter
+      serves every taxonomy kind, no `conflicts`-specific carve-out.
     """
     if subject.domain != other.domain:
         return False
@@ -218,8 +225,9 @@ async def discover(
     entirely when there are no surviving candidates) -> for each
     (pair, suggestion): 'unrelated' is dropped, below-`confidence_floor` is
     dropped and counted, otherwise `store.enqueue` (kind 'supersede' for
-    'supersedes', 'link' for 'supplements') -- a `None` return (an identical
-    open item already exists) is tolerated and counted as deduped rather than
+    'supersedes', 'link' for 'supplements', 'conflict' for 'conflicts') -- a
+    `None` return (an identical open item already exists) is tolerated and
+    counted as deduped rather than
     treated as an error. `store.mark_discovered` runs in the SAME transaction
     as that decision's enqueues, only once every one of its classified pairs
     has been considered -- a process death between `classify_pairs` (not

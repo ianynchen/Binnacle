@@ -913,9 +913,22 @@ class PostgresStore:
             )
             supplement_ids = [r["from_id"] async for r in cur]
 
+            # CONFLICTS_WITH is symmetric (unlike SUPERSEDES/SUPPLEMENTS, which
+            # are directional) -- `resolve_conflict`'s accept path inserts it
+            # `(from=item.decision_id, to=item.target_id)`, but either side
+            # asking for its history wants the OTHER side back.
+            cur = await conn.execute(
+                f"SELECT CASE WHEN from_id = %(id)s THEN to_id ELSE from_id END AS other_id "
+                f"FROM {schema}.links WHERE kind = 'CONFLICTS_WITH' "
+                "AND (from_id = %(id)s OR to_id = %(id)s)",
+                {"id": decision_id},
+            )
+            conflict_ids = [r["other_id"] async for r in cur]
+
             predecessors = await self._decisions_by_id_ordered(conn, predecessor_ids)
             successors = await self._decisions_by_id_ordered(conn, successor_ids)
             supplements = await self._decisions_by_id_ordered(conn, supplement_ids)
+            conflicts = await self._decisions_by_id_ordered(conn, conflict_ids)
 
         return HistoryRecord(
             decision=decision,
@@ -924,6 +937,7 @@ class PostgresStore:
             predecessors=predecessors,
             successors=successors,
             supplements=supplements,
+            conflicts=conflicts,
         )
 
     async def changes(

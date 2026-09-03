@@ -142,6 +142,23 @@ class Binnacle:
         `LifecycleEngine.apply_item`."""
         await self._engine.apply_item(item_id, actor)
 
+    async def resolve_conflict(
+        self,
+        item_id: int,
+        actor: Actor,
+        *,
+        winner_id: UUID | None = None,
+        refined: NewDecision | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Resolve a `conflict` queue item (human only): exactly one of
+        `winner_id` (outright supersession), `refined` (a new decision
+        supersedes both sides), or neither with `reason` (accept as a standing
+        `CONFLICTS_WITH` relationship). See `LifecycleEngine.resolve_conflict`."""
+        await self._engine.resolve_conflict(
+            item_id, actor, winner_id=winner_id, refined=refined, reason=reason
+        )
+
     async def dismiss_item(self, item_id: int, actor: Actor, reason: str | None = None) -> None:
         """Dismiss a queue item as noise (human only). See
         `LifecycleEngine.dismiss_item`."""

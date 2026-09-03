@@ -58,3 +58,13 @@ class ItemNotFound(BinnacleError):
 
 class ItemAlreadyResolved(BinnacleError):
     """Item is already resolved."""
+
+
+class InvalidResolution(BinnacleError):
+    """A queue-item resolution call's arguments are malformed -- e.g.
+    `resolve_conflict`'s `winner_id`/`refined`/`reason` combination names zero
+    or more than one resolution path, or `winner_id` isn't one of the item's
+    two decisions. Distinct from `InvalidTransition`, which is reserved for
+    state-related illegality (wrong status, wrong item kind, a cycle) -- this
+    is pure caller argument misuse, decidable before any row is even locked.
+    """

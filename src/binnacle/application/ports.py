@@ -48,7 +48,7 @@ class Suggester(Protocol):
 
     async def classify_pairs(self, pairs: list[CandidatePair]) -> list[Suggestion]:
         """Classify each candidate pair as `supersedes` / `supplements` /
-        `unrelated`, with a rationale and confidence (FR-7.2/7.4)."""
+        `conflicts` / `unrelated`, with a rationale and confidence (FR-7.2/7.4)."""
         ...
 
     async def assess_promotion(self, decisions: list[CompactDecision]) -> list[PromotionAssessment]:

@@ -39,6 +39,7 @@ from binnacle.domain.errors import (
     AuthorityViolation,
     DecisionNotFound,
     IdempotencyConflict,
+    InvalidResolution,
     InvalidTransition,
     ItemAlreadyResolved,
     ItemNotFound,
@@ -914,6 +915,251 @@ class TestMatrixDismissItem:
         await engine.dismiss_item(item_id, HUMAN, "not relevant")
         with pytest.raises(ItemAlreadyResolved):
             await engine.dismiss_item(item_id, HUMAN, "again")
+
+
+# ===========================================================================
+# resolve_conflict — human always; item kind='conflict' required; exactly one
+# of winner_id / refined / (nothing, with reason) per call.
+# ===========================================================================
+
+
+async def _enqueue_conflict(
+    store: PostgresStore, subject_id: UUID, target_id: UUID, *, proposed_by: Actor = RECORDER
+) -> int:
+    """Fabricate an open `conflict` queue item directly against the store --
+    the same pattern `TestMatrixApplyItem` uses for `link`/`supersede` items,
+    standing in for what `discover()`'s `conflicts` classification would
+    enqueue (exercised separately in tests/db/test_sweeps.py)."""
+    async with store.transaction() as tx:
+        item_id = await store.enqueue(
+            tx, "conflict", subject_id, target_id, proposed_by, "looks contradictory", 0.85
+        )
+    assert item_id is not None
+    return item_id
+
+
+class TestMatrixResolveConflict:
+    async def test_winner_path_supersedes_loser_and_resolves_item(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+
+        await engine.resolve_conflict(item_id, HUMAN, winner_id=a.decision_id)
+
+        assert await _status(store, a.decision_id) == "current"
+        assert await _status(store, b.decision_id) == "superseded"
+        b_hist = await store.history(b.decision_id)
+        supersedes_links = [
+            link
+            for link in b_hist.links
+            if link.kind == "SUPERSEDES" and link.to_id == b.decision_id
+        ]
+        assert len(supersedes_links) == 1
+        assert supersedes_links[0].from_id == a.decision_id
+        with pytest.raises(ItemAlreadyResolved):
+            await engine.resolve_conflict(item_id, HUMAN, winner_id=a.decision_id)
+
+    async def test_winner_path_voids_losers_open_items(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        loser_item_id = await engine.recommend(b.decision_id, RECORDER, "consider")
+        assert loser_item_id is not None
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+
+        await engine.resolve_conflict(item_id, HUMAN, winner_id=a.decision_id)
+
+        with pytest.raises(ItemAlreadyResolved):
+            await engine.decline(loser_item_id, HUMAN, "too late")
+
+    async def test_non_human_refused(self, engine: LifecycleEngine, store: PostgresStore) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+        with pytest.raises(AuthorityViolation):
+            await engine.resolve_conflict(item_id, RECORDER, winner_id=a.decision_id)
+
+    async def test_wrong_item_kind_refused(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        d = await reach(engine, store, "short_term", "current")
+        item_id = await engine.recommend(d.decision_id, RECORDER, "why")
+        assert item_id is not None
+        with pytest.raises(InvalidTransition):
+            await engine.resolve_conflict(item_id, HUMAN, reason="not relevant")
+
+    async def test_winner_id_must_be_one_of_the_two_sides(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        stranger = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+        with pytest.raises(InvalidResolution):
+            await engine.resolve_conflict(item_id, HUMAN, winner_id=stranger.decision_id)
+
+    async def test_winner_and_refined_both_given_raises_invalid_resolution(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+        with pytest.raises(InvalidResolution):
+            await engine.resolve_conflict(
+                item_id, HUMAN, winner_id=a.decision_id, refined=_nd(scenario="both given")
+            )
+
+    async def test_neither_winner_nor_refined_without_reason_raises_invalid_resolution(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+        with pytest.raises(InvalidResolution):
+            await engine.resolve_conflict(item_id, HUMAN)
+
+    async def test_lt_tier_gate_refuses_cross_tier_winner(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        st_side = await reach(engine, store, "short_term", "current")
+        lt_side = await reach(engine, store, "long_term", "current")
+        item_id = await _enqueue_conflict(store, lt_side.decision_id, st_side.decision_id)
+        with pytest.raises(InvalidTransition):
+            await engine.resolve_conflict(item_id, HUMAN, winner_id=lt_side.decision_id)
+
+    async def test_refined_consolidates_both_short_term_sides(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        stray_item_id = await engine.recommend(b.decision_id, RECORDER, "consider")
+        assert stray_item_id is not None
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+
+        await engine.resolve_conflict(
+            item_id, HUMAN, refined=_nd(scenario="the reconciled decision")
+        )
+
+        assert await _status(store, a.decision_id) == "superseded"
+        assert await _status(store, b.decision_id) == "superseded"
+        # `b`'s own stray open item (unrelated to the conflict item itself)
+        # is auto-voided by the same FR-4.3 rule `supersede()` uses.
+        with pytest.raises(ItemAlreadyResolved):
+            await engine.decline(stray_item_id, HUMAN, "too late")
+
+        a_hist = await store.history(a.decision_id)
+        successor_ids = {
+            link.from_id
+            for link in a_hist.links
+            if link.kind == "SUPERSEDES" and link.to_id == a.decision_id
+        }
+        assert len(successor_ids) == 1
+        refined_id = next(iter(successor_ids))
+        refined = await store.get_decision(refined_id)
+        assert refined is not None
+        assert refined.tier == "short_term"
+        assert refined.recorded_by == HUMAN
+        assert sorted(refined.supersedes) == sorted([a.decision_id, b.decision_id])
+
+    async def test_refined_forces_long_term_when_both_sides_are_long_term(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "long_term", "current")
+        b = await reach(engine, store, "long_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+
+        await engine.resolve_conflict(
+            item_id, HUMAN, refined=_nd(scenario="the durable reconciliation")
+        )
+
+        assert await _status(store, a.decision_id) == "superseded"
+        assert await _status(store, b.decision_id) == "superseded"
+        a_hist = await store.history(a.decision_id)
+        successor_ids = {
+            link.from_id
+            for link in a_hist.links
+            if link.kind == "SUPERSEDES" and link.to_id == a.decision_id
+        }
+        refined_id = next(iter(successor_ids))
+        refined_hist = await store.history(refined_id)
+        # `recorded` + `promoted` mirror `record_long_term`'s own pair; the
+        # trailing `superseded` entries are `_execute_supersede`'s own-side
+        # log lines from consolidating each of the two conflict sides.
+        assert [t.action for t in refined_hist.transitions][:2] == ["recorded", "promoted"]
+        refined = await store.get_decision(refined_id)
+        assert refined is not None
+        assert refined.tier == "long_term"
+
+    async def test_refined_mixed_tier_sides_refused_by_tier_gate(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """FR-5.2a's tier gate is not relaxed for conflict resolution: when the
+        two sides straddle tiers, `refined` is forced long-term (since one side
+        is), but a long-term decision can never directly supersede a
+        short-term one -- so the short-term side's supersede leg is refused
+        exactly like a direct cross-tier `supersede()` call would be."""
+        st_side = await reach(engine, store, "short_term", "current")
+        lt_side = await reach(engine, store, "long_term", "current")
+        item_id = await _enqueue_conflict(store, lt_side.decision_id, st_side.decision_id)
+        with pytest.raises(InvalidTransition):
+            await engine.resolve_conflict(
+                item_id, HUMAN, refined=_nd(scenario="cannot bridge tiers")
+            )
+
+    async def test_accept_path_links_and_transitions_both_sides_without_status_change(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+
+        await engine.resolve_conflict(
+            item_id, HUMAN, reason="both stand, contradiction acknowledged"
+        )
+
+        assert await _status(store, a.decision_id) == "current"
+        assert await _status(store, b.decision_id) == "current"
+
+        a_hist = await store.history(a.decision_id)
+        b_hist = await store.history(b.decision_id)
+        assert "conflict_accepted" in [t.action for t in a_hist.transitions]
+        assert "conflict_accepted" in [t.action for t in b_hist.transitions]
+        accepted = next(t for t in a_hist.transitions if t.action == "conflict_accepted")
+        assert accepted.reason == "both stand, contradiction acknowledged"
+        assert accepted.new_status is None
+
+        assert [d.decision_id for d in a_hist.conflicts] == [b.decision_id]
+        assert [d.decision_id for d in b_hist.conflicts] == [a.decision_id]
+
+    async def test_apply_item_refuses_conflict_item(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+        with pytest.raises(InvalidTransition):
+            await engine.apply_item(item_id, HUMAN)
+        # The refusal rolled back its whole transaction -- the item is still
+        # open, resolvable through the right door.
+        await engine.resolve_conflict(item_id, HUMAN, winner_id=a.decision_id)
+        assert await _status(store, b.decision_id) == "superseded"
+
+    async def test_dismiss_item_still_works_on_conflict_items(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        a = await reach(engine, store, "short_term", "current")
+        b = await reach(engine, store, "short_term", "current")
+        item_id = await _enqueue_conflict(store, a.decision_id, b.decision_id)
+
+        await engine.dismiss_item(item_id, HUMAN, "false positive")
+
+        assert await _status(store, a.decision_id) == "current"
+        assert await _status(store, b.decision_id) == "current"
+        a_hist = await store.history(a.decision_id)
+        assert "dismissed" in [t.action for t in a_hist.transitions]
 
 
 # ===========================================================================

@@ -18,12 +18,14 @@ Two shared act-internal helpers do the repeated wiring:
 
 - `_execute_supersede` / `_execute_supplement`: link + the two-sided transition
   pair, reused by `supersede`/`supplement` (direct calls), `record`'s inline
-  short-term supersede, `apply_item` (executing a suggested link/supersede), and
-  `promote`/`promote_refined`'s pending-claim execution.
+  short-term supersede, `apply_item` (executing a suggested link/supersede),
+  `promote`/`promote_refined`'s pending-claim execution, and
+  `resolve_conflict`'s `winner_id`/`refined` paths.
 - `_void_open_items`: FR-4.3's "leaves current outside the gate voids its open
-  queue items" rule, reused by `discard`, `supersede` (on the target), and
+  queue items" rule, reused by `discard`, `supersede` (on the target),
   `promote_refined` (on each source, after that source's own pending claims have
-  already been executed and so are no longer open).
+  already been executed and so are no longer open), and `resolve_conflict`'s
+  `winner_id`/`refined` paths (on the superseded side(s)).
 """
 
 from collections.abc import Sequence
@@ -31,8 +33,13 @@ from uuid import UUID
 
 from binnacle.application.ports import DecisionRow, StorePort, Tx
 from binnacle.application.recorder import insert_new_decision
-from binnacle.domain.errors import AuthorityViolation, DecisionNotFound, InvalidTransition
-from binnacle.domain.models import Actor, Decision, NewDecision, QueueItemView
+from binnacle.domain.errors import (
+    AuthorityViolation,
+    DecisionNotFound,
+    InvalidResolution,
+    InvalidTransition,
+)
+from binnacle.domain.models import Actor, Decision, NewDecision, QueueItemView, Tier
 
 # ST statuses from which a decision may be superseded (03's exit matrix).
 _ST_SUPERSEDABLE = frozenset({"current", "not_promoted"})
@@ -451,9 +458,11 @@ class LifecycleEngine:
             AuthorityViolation: `actor.kind != 'human'`.
             ItemNotFound: `item_id` does not exist.
             ItemAlreadyResolved: `item_id` was already resolved.
-            InvalidTransition: the item is not a `link`/`supersede` item, its
-                target is missing, or (for `supersede`) the tiers don't match,
-                the target isn't supersedable, or it would create a cycle.
+            InvalidTransition: the item is not a `link`/`supersede` item (a
+                `conflict` item must go through `resolve_conflict` instead),
+                its target is missing, or (for `supersede`) the tiers don't
+                match, the target isn't supersedable, or it would create a
+                cycle.
             DecisionNotFound: the item's decision or target does not exist.
         """
         if actor.kind != "human":
@@ -467,6 +476,9 @@ class LifecycleEngine:
                     ids.append(peeked.item.target_id)
                 await self._store.lock_decisions(tx, ids)
             item = await self._store.resolve_item(tx, item_id)
+            if item.kind == "conflict":
+                msg = "conflict items must be resolved via resolve_conflict()"
+                raise InvalidTransition(item.kind, "apply_item", msg)
             if item.kind not in ("link", "supersede") or item.target_id is None:
                 msg = "queue item is not an applicable link/supersede suggestion"
                 raise InvalidTransition(item.kind, "apply_item", msg)
@@ -480,6 +492,144 @@ class LifecycleEngine:
                 await self._execute_supersede(tx, new_id, old_id, actor, item_id=item_id)
             else:
                 await self._execute_supplement(tx, new_id, old_id, actor, item_id=item_id)
+
+    async def resolve_conflict(
+        self,
+        item_id: int,
+        actor: Actor,
+        *,
+        winner_id: UUID | None = None,
+        refined: NewDecision | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Resolve a `conflict` queue item (human only, always — I-2, since a
+        conflict may touch a long-term decision), exactly one of three ways:
+
+        - **`winner_id`**: one of the item's two decisions wins outright —
+          executes the existing `supersede` semantics of the winner over the
+          loser (same tier gate, acyclicity check, and auto-void of the
+          loser's open items as a direct `supersede()` call) inside this act's
+          own transaction.
+        - **`refined`**: a NEW decision (validated like any recording)
+          supersedes BOTH sides. Its tier is forced to `long_term` — recorded
+          via the same `recorded`+`promoted` transition pair as
+          `record_long_term` — when either side is `long_term` (FR-5.2a: a
+          long-term decision is superseded only by a long-term successor);
+          otherwise it is recorded short-term. Superseding a side whose tier
+          doesn't match the refined decision's is refused exactly like a
+          direct cross-tier `supersede()` call would be (the tier gate
+          applies uniformly here too) — no acyclicity check is needed, since
+          the refined decision is a freshly minted id with no existing links
+          this transaction (same reasoning as `_execute_pending_claims`'s
+          long-term copy).
+        - **neither** (`reason` required): the conflict is accepted as a
+          standing, unresolved relationship rather than adjudicated — inserts
+          a `CONFLICTS_WITH` link between the two decisions and a
+          `conflict_accepted` transition on each (`new_status=None`, no
+          status change, mirroring `supplement`'s FR-5.3 shape).
+
+        Every path ends by resolving `item_id`.
+
+        Raises:
+            AuthorityViolation: `actor.kind != 'human'`.
+            InvalidResolution: both `winner_id` and `refined` are given; none
+                of `winner_id`/`refined`/`reason` are given; or `winner_id`
+                names neither of the item's two decisions.
+            ItemNotFound: `item_id` does not exist.
+            ItemAlreadyResolved: `item_id` was already resolved.
+            InvalidTransition: the item is not a `conflict` item; or a
+                superseded side is not in a supersedable status, its tier
+                doesn't match the winner's/refined's, or it would create a
+                cycle (`winner_id` path only).
+            DecisionNotFound: the item's decision or target does not exist.
+            UnknownDomain: `refined.domain` is not registered.
+            InactiveDomain: `refined.domain` is registered but deactivated.
+        """
+        if actor.kind != "human":
+            msg = "resolve_conflict requires a human actor"
+            raise AuthorityViolation(msg)
+        if winner_id is not None and refined is not None:
+            msg = "resolve_conflict accepts at most one of winner_id or refined"
+            raise InvalidResolution(msg)
+        if winner_id is None and refined is None and reason is None:
+            msg = "accepting a conflict (neither winner_id nor refined given) requires a reason"
+            raise InvalidResolution(msg)
+
+        peeked = await self._peek_item(item_id)
+        async with self._store.transaction() as tx:
+            if peeked is not None:
+                ids = [peeked.item.decision_id]
+                if peeked.item.target_id is not None:
+                    ids.append(peeked.item.target_id)
+                await self._store.lock_decisions(tx, ids)
+            item = await self._store.resolve_item(tx, item_id)
+            if item.kind != "conflict" or item.target_id is None:
+                msg = "queue item is not a pending conflict"
+                raise InvalidTransition(item.kind, "resolve_conflict", msg)
+            side_a, side_b = item.decision_id, item.target_id
+            # Both sides, batched in one call (deadlock-avoidance, same reason
+            # as every other multi-decision act) -- for the `refined` path
+            # these are also the only "refined targets" that need locking.
+            locked = await self._store.lock_decisions(tx, [side_a, side_b])
+            row_a = _require(locked, side_a)
+            row_b = _require(locked, side_b)
+
+            if winner_id is not None:
+                if winner_id not in (side_a, side_b):
+                    msg = "winner_id must be one of the conflict item's two decisions"
+                    raise InvalidResolution(msg)
+                loser_id, loser_row, winner_row = (
+                    (side_b, row_b, row_a) if winner_id == side_a else (side_a, row_a, row_b)
+                )
+                self._validate_supersede(loser_row, winner_row, "resolve_conflict")
+                await self._check_acyclic(
+                    tx, loser_id, winner_id, loser_row.status, "resolve_conflict"
+                )
+                await self._execute_supersede(tx, winner_id, loser_id, actor, item_id=item_id)
+                await self._void_open_items(tx, loser_id, actor)
+                return
+
+            if refined is not None:
+                target_tier: Tier = (
+                    "long_term" if "long_term" in (row_a.tier, row_b.tier) else "short_term"
+                )
+                refined_decision, outcome = await insert_new_decision(
+                    self._store, tx, refined, actor, target_tier, "current"
+                )
+                if target_tier == "long_term" and outcome != "exists_identical":
+                    await self._store.apply_transition(
+                        tx,
+                        refined_decision.decision_id,
+                        "promoted",
+                        actor.as_str(),
+                        None,
+                        None,
+                        None,
+                    )
+                refined_row = DecisionRow(
+                    decision_id=refined_decision.decision_id,
+                    tier=target_tier,
+                    domain=refined_decision.domain,
+                    status="current",
+                )
+                for side_id, side_row in ((side_a, row_a), (side_b, row_b)):
+                    self._validate_supersede(side_row, refined_row, "resolve_conflict")
+                    await self._execute_supersede(
+                        tx, refined_decision.decision_id, side_id, actor, item_id=item_id
+                    )
+                    await self._void_open_items(tx, side_id, actor)
+                return
+
+            # Accept: neither winner nor refinement -- acknowledge as a
+            # standing relationship, no status change on either side.
+            assert reason is not None, "argument validation above guarantees this"
+            await self._store.insert_link(tx, side_a, side_b, "CONFLICTS_WITH")
+            await self._store.apply_transition(
+                tx, side_a, "conflict_accepted", actor.as_str(), reason, {"item_id": item_id}, None
+            )
+            await self._store.apply_transition(
+                tx, side_b, "conflict_accepted", actor.as_str(), reason, {"item_id": item_id}, None
+            )
 
     async def dismiss_item(self, item_id: int, actor: Actor, reason: str | None) -> None:
         """Dismiss a queue item (human only) as noise: resolves the item and logs
