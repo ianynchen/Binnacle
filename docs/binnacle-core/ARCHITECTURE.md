@@ -256,6 +256,15 @@ radius. The division of responsibility:
   kind. Id honesty WITHIN a kind (e.g. FR-3.3's discard-own rule comparing agent
   ids) is the embedder's enforcement duty — binnacle trusts the attested id; that
   is the documented boundary of "attribution, not authorization".
+  **Neither field is independently verifiable by binnacle-core.** The Lifecycle
+  Engine enforces its rules *against* the attested kind (e.g. refusing
+  `promote()` unless `kind == "human"`), but has no mechanism — cryptographic or
+  otherwise — to confirm an attestation is truthful; a caller that lies about
+  its own kind or id is not something binnacle-core can detect, for either
+  field. Validating both before constructing the `Actor` is entirely the
+  calling party's responsibility — meridian today, and equally any other
+  embedder (including `binnacle-router`, which must resolve kind/id from its
+  own already-verified authentication, never from a raw client-supplied value).
 - **I-3** Decision content columns are never UPDATEd after insert.
 - **I-4** Suggestions (queue rows, `Suggester` output) touch nothing outside
   `queue` until a human resolution passes through the Lifecycle Engine.
