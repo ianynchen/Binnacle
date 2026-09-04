@@ -13,12 +13,12 @@ Sections 1–4 govern **how to work** on any change. Sections 5–12 govern **ho
   
 ### 1.1 The spec and plan are a contract — no unilateral deviations  
   
-The design spec (`docs/components/*`, and REQUIREMENTS) and the phase plans (`docs/superpowers/plans/*`) exist so work is **trackable against an agreed contract** — NOT as a starting suggestion the agent edits and reports afterward. **Decide-then-inform is a violation.** Before acting, STOP and get explicit approval for any of:  
+The design spec (`docs/<package>/components/*`, and each package's REQUIREMENTS.md) and the phase plans (`docs/superpowers/plans/*`) exist so work is **trackable against an agreed contract** — NOT as a starting suggestion the agent edits and reports afterward. **Decide-then-inform is a violation.** Before acting, STOP and get explicit approval for any of:  
   
 - **Scope changes** — deferring, descoping, or dropping anything in the plan/requirements (even "I'll do it in a later sub-phase"); adding scope not in the plan.  
 - **Spec deviations** — a module layout, identifier grammar, table/schema shape, fact-stream contract, node/edge/catalog form, or construct set that differs from what the spec states (including "extending" a set the spec calls *closed*).  
 - **Design choices not pre-decided** in the plan's decisions, the spec, or this document's defaults.  
-- **Plan/spec edits themselves** — changing a decision, marking scope done/deferred, or amending a `docs/components/*` file.  
+- **Plan/spec edits themselves** — changing a decision, marking scope done/deferred, or amending a `docs/<package>/components/*` file.  
   
 Allowed without asking: reading anything; running tests/linters/builds; writing tests; **implementing exactly what the plan/spec specifies**. When the spec is silent or wrong, do not pick — follow §6 (propose amendment with rationale, then proceed *once confirmed*; never code around a doc without updating it first, per §5).  
   
@@ -66,12 +66,15 @@ AI agents additionally checkpoint after each significant step per §13.4.
   
 Authoritative when documents disagree, in this order (initialize these under the `docs/` folder on first use if they do not exist):  
   
-1. **[REQUIREMENTS.md](docs/REQUIREMENTS.md)** — functional and non-functional requirements.  
-2. **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — design decisions, technology choices, extension points, C4 diagrams. Must be consistent with REQUIREMENTS.md.  
-3. **[PROJECT.md](docs/PROJECT.md)** — delivery status only (`planned | in-progress | delivered | deferred | cancelled`), each entry linking to a requirement. Create on first use if missing.  
-4. **[RUNBOOK.md](docs/RUNBOOK.md)** - lessons learned throughout current project. To be reviewed before a task is being performed to avoid past mistakes.  
+0. **[OVERVIEW.md](docs/OVERVIEW.md)** — system-level context across all packages: how they relate, repository layout, and shared tooling decisions. Package-specific requirements/architecture (below) must be consistent with it.
+1. **REQUIREMENTS.md** (`docs/<package>/REQUIREMENTS.md`, e.g. [docs/binnacle-core/REQUIREMENTS.md](docs/binnacle-core/REQUIREMENTS.md)) — functional and non-functional requirements for that package.  
+2. **ARCHITECTURE.md** (`docs/<package>/ARCHITECTURE.md`, e.g. [docs/binnacle-core/ARCHITECTURE.md](docs/binnacle-core/ARCHITECTURE.md)) — design decisions, technology choices, extension points, C4 diagrams for that package. Must be consistent with its own REQUIREMENTS.md.  
+3. **[PROJECT.md](docs/PROJECT.md)** — delivery status only (`planned | in-progress | delivered | deferred | cancelled`), each entry linking to a requirement **and naming its package**. Create on first use if missing.  
+4. **[RUNBOOK.md](docs/RUNBOOK.md)** - lessons learned throughout current project (shared across all packages). To be reviewed before a task is being performed to avoid past mistakes.  
   
-**CHANGELOG.md** follows [Keep a Changelog](https://keepachangelog.com/) and [SemVer](https://semver.org/). Every merge to main adds an `## [Unreleased]` entry; tagging rolls it into a versioned section.  
+Elsewhere in this document, a bare "REQUIREMENTS.md" or "ARCHITECTURE.md" means the relevant package's copy under `docs/<package>/`, resolved by which package the change touches.
+  
+**CHANGELOG.md is per package** (`packages/<name>/CHANGELOG.md`, since each package carries its own independent SemVer version — see §11 Versioning), following [Keep a Changelog](https://keepachangelog.com/) and [SemVer](https://semver.org/). Every merge to main touching a package adds an `## [Unreleased]` entry to that package's changelog; tagging that package's release rolls it into a versioned section.  
   
 Reference across documents; never duplicate. Any change that alters behaviour or design **updates REQUIREMENTS.md and/or ARCHITECTURE.md in the same commit**.  
   
@@ -79,7 +82,7 @@ Reference across documents; never duplicate. Any change that alters behaviour or
   
 The schema contract can described in several files at once; they must never drift apart. **When the schema changes** — update **all** of these in the **same commit**:  
   
-- The affected **component specs** under `docs/components/`, and any other touched spec.  
+- The affected **component specs** under `docs/<package>/components/`, and any other touched spec.  
 - **REQUIREMENTS.md / ARCHITECTURE.md** where the contract (FR-3 endpoint catalog, NFR-5 construct set, §8 catalog format) is stated.  
 - `CHANGELOG.md`.  
 
@@ -225,7 +228,7 @@ Pure docs, chore, test, or behaviour-preserving refactor changes do **not** bump
 - [ ] New behaviour has tests per §10.  
 - [ ] Architecture tests pass.  
 - [ ] Formatter and linter clean.  
-- [ ] REQUIREMENTS.md / ARCHITECTURE.md updated in the same commit if behaviour or design changed.  
+- [ ] The touched package's REQUIREMENTS.md / ARCHITECTURE.md (`docs/<package>/`) updated in the same commit if behaviour or design changed; `docs/OVERVIEW.md` updated too if the change affects cross-package structure.  
 - [ ] Schema change? All schema-describing files updated together, and `docs/html` regenerated via `scripts/generate-html.py` (§5.2).  
 - [ ] PROJECT.md status updated.  
 - [ ] CHANGELOG.md `Unreleased` updated for user-visible changes.  
