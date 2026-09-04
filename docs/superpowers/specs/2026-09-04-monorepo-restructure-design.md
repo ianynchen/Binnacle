@@ -41,7 +41,17 @@ spec/plan cycle once scaffolded.
   REST/MCP surface and component set are future work.
 - **No behavior change to `binnacle-core`'s logic.** This is a structural
   move: package rename, directory move, tooling wiring. The domain model,
-  schema, and application logic are unchanged.
+  schema, and application logic are unchanged. **This does not mean the
+  change is invisible externally**: renaming the distribution from
+  `binnacle` to `binnacle-core` and the import from `binnacle` to
+  `binnacle_core` breaks any existing `pip install binnacle` / `import
+  binnacle` — see DR-6.
+- **No cross-package dependency/layering design.** `binnacle-router` will
+  eventually depend on `binnacle-core`, but how it may do so (e.g. "only
+  through `binnacle-core`'s public application-layer surface, never its
+  adapters") is deliberately left to `binnacle-router`'s own future spec —
+  see DR-7. This spec does not wire that dependency yet, since the router
+  package is scaffolded empty.
 
 ## 3. Package layout
 
@@ -134,10 +144,13 @@ root changelog stops being meaningful once versions diverge.
 
 `docs/adr/NNNN-<topic>.md`, plain numbered Markdown, immutable once accepted
 — a later reversal is a new, superseding ADR, never an edit to an old one.
-This is a new convention (GUIDELINES §5.2 required ADRs but never specified
-where they live). Deliberately **not** stored as records inside a running
-binnacle instance: `binnacle-core` itself is one of the things this ADR
-describes restructuring, so recording it there would be circular.
+This is a new convention: GUIDELINES §5.2 has required ADRs since it was
+written but never specified where they live or what format they take — that
+gap gets closed, not just referenced, by writing this location and format
+directly into §5.2 (see §5.2 below). Deliberately **not** stored as records
+inside a running binnacle instance: `binnacle-core` itself is one of the
+things this ADR describes restructuring, so recording it there would be
+circular.
 
 ### 5.2 GUIDELINES.md updates required
 
@@ -145,7 +158,11 @@ describes restructuring, so recording it there would be circular.
 and `docs/components/*` as flat, singular paths. These become per-package
 (`docs/<package>/REQUIREMENTS.md`, etc.), with `docs/OVERVIEW.md` added as
 the system-level document sitting above them. `§11` (Versioning /
-Definition of Done) gets a note that `CHANGELOG.md` is per-package.
+Definition of Done) gets a note that `CHANGELOG.md` is per-package. `§5.2`
+(Architectural Changes) gets the ADR location and format from this spec's
+§5.1 written in directly — today it mandates ADRs without saying where they
+go, which is the exact kind of undocumented convention this project's own
+§5.3 warns against.
 
 ## 6. Workspace tooling
 
@@ -154,17 +171,22 @@ Two workspace managers, one repository, each blind to the other:
 - **Python** (`binnacle-core`, `binnacle-router`): the root `pyproject.toml`
   becomes a `uv` workspace manifest (`[tool.uv.workspace]`) with an
   **explicit** member list — `members = ["packages/binnacle-core",
-  "packages/binnacle-router"]`, not a `packages/*` glob — so `uv` never tries
-  to treat the JS package as a Python one. Each package keeps its own
-  `[project]` block, dependencies, and version.
+  "packages/binnacle-router"]`, not a `packages/*` glob. This isn't just
+  tidiness: `uv` requires every glob-matched member to contain a
+  `pyproject.toml`, so a `packages/*` glob would hard-error on
+  `binnacle-ui` (verified against `uv`'s workspace docs). Each package
+  keeps its own `[project]` block, dependencies, and version.
 - **JS** (`binnacle-ui`): a root `pnpm-workspace.yaml` covering
   `packages/binnacle-ui`.
 - `[tool.importlinter]` (currently root-level, `root_package = "binnacle"`)
   moves into `packages/binnacle-core/pyproject.toml` as `root_package =
   "binnacle_core"` — layering enforcement is internal to a package.
-- `[tool.ruff]` stays shared at the root `pyproject.toml`: ruff resolves
-  config by walking up from each file, so both Python packages share one
-  style with zero duplication unless a package later needs its own override.
+- `[tool.ruff]` stays shared at the root `pyproject.toml`: ruff skips any
+  `pyproject.toml` that lacks a `[tool.ruff]` table and keeps walking up the
+  directory tree, so as long as neither package's own `pyproject.toml` adds
+  its own `[tool.ruff]` section, both share the root config with zero
+  duplication (verified against Ruff's config-discovery docs during review,
+  not assumed).
 
 ## 7. binnacle-ui technology choices
 
@@ -212,6 +234,17 @@ container when `BINNACLE_TEST_DSN` isn't set (so `git push` "just works"
 without manual DB setup) is left to the implementation plan — it's a
 convenience detail, not a structural one.
 
+**A real gap this design must not paper over:** `pre-commit install` only
+wires the `pre-commit` stage by default — it does **not** install `pre-push`
+hooks unless run as `pre-commit install --hook-type pre-commit --hook-type
+pre-push`. If that's left as tribal knowledge, the `pre-push` stage silently
+never runs for anyone who followed the "normal" setup instructions, and
+DR-5's entire "what's pushed is what CI checks" guarantee becomes false
+without anyone noticing. This has to be a documented (or better, scripted —
+e.g. a `make setup` / `scripts/dev-setup.sh` that runs both installs)
+contributor setup step, not something left implicit. Captured as a required
+step in the migration outline (§10) rather than left to be rediscovered.
+
 ## 9. Decision records
 
 - **DR-1 Flat `packages/`, not split-by-ecosystem.** Rejected splitting into
@@ -241,6 +274,21 @@ convenience detail, not a structural one.
   enough to discourage committing at all. `pre-push` runs once, right before
   the point that matters (code leaving the machine), running the literal same
   script CI runs.
+- **DR-6 The rename is a breaking change, called out explicitly rather than
+  absorbed silently into "just a move."** `binnacle` → `binnacle-core`
+  changes the distribution name and the top-level import (`import binnacle`
+  stops working). GUIDELINES §11 requires proposing the exact SemVer bump and
+  getting explicit confirmation before applying it — this spec does not
+  pre-decide that number, but flags that "no behavior change" (§2) is true of
+  the *logic*, not of the *public import surface*, and the implementation
+  plan must not let that distinction get lost.
+- **DR-7 Cross-package dependency direction (router → core) is deferred, not
+  silently skipped.** GUIDELINES §8 requires architecture rules to be
+  enforced, not aspirational — so when `binnacle-router` gains real code, its
+  own spec must define and enforce (via an import-linter contract or
+  equivalent) which part of `binnacle-core`'s surface it may depend on. Not
+  deciding it now, while `binnacle-router` is empty, is a legitimate
+  deferral; not deciding it *ever* would not be.
 
 ## 10. Migration outline (implementation-plan level, listed for completeness)
 
@@ -259,10 +307,23 @@ convenience detail, not a structural one.
 7. Add root `pnpm-workspace.yaml`.
 8. Update `.pre-commit-config.yaml` (new hooks, `pre-push` stage) and
    `.github/workflows/ci.yml` (loop over packages, add JS steps).
-9. Create `docs/adr/0001-monorepo-restructure.md` recording this change.
+9. Create `docs/adr/0001-monorepo-restructure.md` recording this change,
+   including the DR-6 breaking-change call-out and the SemVer bump it forces.
 10. Update `GUIDELINES.md` per §5.2 above.
-11. Create per-package `CHANGELOG.md` files; remove the root one (or fold its
-    prior history into `binnacle-core`'s, since all prior history is core's).
+11. Create per-package `CHANGELOG.md` files. **Fold the existing root
+    `CHANGELOG.md`'s history into `packages/binnacle-core/CHANGELOG.md`** (not
+    left as an "or" — every existing entry describes what is now
+    `binnacle-core`), then remove the root file.
+12. Rewrite the root `README.md` as a monorepo landing page (what the three
+    packages are, links to each); move today's installation/usage/API-detail
+    content into `packages/binnacle-core/README.md`, since that content is
+    specific to installing and using `binnacle-core`, not the monorepo as a
+    whole.
+13. Update `.gitignore` for the JS toolchain entering the repo for the first
+    time (`node_modules/`, build output, etc.).
+14. Document (and where possible, script — e.g. a `scripts/dev-setup.sh`) that
+    contributor setup runs `pre-commit install --hook-type pre-commit
+    --hook-type pre-push`, not just `pre-commit install` — see the §8 gap.
 
 A full step-by-step implementation plan (with verification per step) is the
 next artifact, produced by the `writing-plans` skill once this spec is
@@ -270,6 +331,11 @@ approved.
 
 ## 11. Open questions
 
-None outstanding — all decisions in this document were confirmed in
-discussion prior to writing it, except §7's TypeScript choice, which is
-flagged for explicit review since it was not directly asked.
+- **§7's TypeScript choice** — flagged for explicit review since it was a
+  default I applied, not something directly asked.
+- **The exact SemVer bump for the rename (DR-6)** — deliberately not
+  pre-decided here; GUIDELINES §11 requires proposing it and getting
+  explicit confirmation at implementation time, not baking it into a design
+  spec written before the change exists.
+- **Whether `scripts/check.sh` should self-provision an ephemeral Postgres**
+  (§8) — a convenience call for the implementation plan, not this spec.
