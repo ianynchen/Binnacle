@@ -22,6 +22,8 @@ The design spec (`docs/<package>/components/*`, and each package's REQUIREMENTS.
   
 Allowed without asking: reading anything; running tests/linters/builds; writing tests; **implementing exactly what the plan/spec specifies**. When the spec is silent or wrong, do not pick — follow §6 (propose amendment with rationale, then proceed *once confirmed*; never code around a doc without updating it first, per §5).  
   
+**Declare deviations explicitly; silence is not a declaration.** Every task report and hand-off states either `Deviations: none` or an enumerated list — a report that simply does not mention a descope has violated this section, not satisfied it. The same applies to a numbered step in a brief: each is completed or explicitly reported as not completed. Skipping one without saying so is the same failure as descoping without asking.  
+  
 **Pre-commit gate:** before committing or merging, confirm the change contains **zero un-approved deviations** from the spec/plan. If a deviation was necessary, it must already be an approved doc amendment. List any deviation in the message only after it was approved — never as a fait accompli.  
   
 ---  
@@ -93,6 +95,16 @@ Architectural change should not take place silently. Always ask for approval bef
 ### 5.3 Documents are authoritative for intent; code is authoritative for existence
 
 §5's ordering settles what the system should do. It does not establish what is built. Before any spec, plan, or review cites a mechanism as shipped — a catalog key, a fact kind, an engine capability, a table — verify it in src/ and record the file:line. A mechanism named only in docs/ is a proposal until proven otherwise.
+
+**Cite the consumer, not the declaration.** The `file:line` that satisfies this rule is where the mechanism is READ, called, or acted upon — never where its name merely appears. A name existing is not a mechanism existing.
+
+**Where a document deliberately describes something ahead of its implementation, it must say so** in words a reader cannot mistake for a shipped feature — `docs/binnacle-router/REQUIREMENTS.md`'s and `docs/binnacle-ui/REQUIREMENTS.md`'s explicit "scaffold, no functional design yet" framing is the model. Silence is the failure mode, not intent.
+
+### 5.4 Empirical evidence is bounded by what it measured
+
+A checkpoint, benchmark, or perf test establishes its verdict only for the configuration it ran against. Extending it further needs either new evidence or an explicit statement that the wider scope is assumed and unverified, written where the verdict is written — so a later reader inherits the boundary along with the result. A recorded verdict otherwise reads as universal.
+
+Binnacle's own NFR-7 seeded perf test is the house example done right: it measures store-side latency at one seeded scale (10k decisions / 100k transitions) and states its bound explicitly as "a generous CI bound over the measured local number," rather than claiming the target holds at every scale or under every `Suggester`/`Embedder` latency profile.
   
 ---  
   
@@ -151,6 +163,8 @@ Every public symbol documents: **purpose**, **parameters and return** (meaning, 
 **Extension points** additionally document: required invariants, ordering and idempotency expectations, what the framework will and will not do, and examples when the contract is subtle.  
   
 **Non-obvious decisions** document: alternatives considered, tradeoff accepted, and conditions to revisit. Prefer one comment explaining *why* over five restating *what*.  
+
+**A comment justifying an omission states the condition that would make it wrong**, in the same sentence. "We do not X because Y" is a claim about the present that a later change can silently falsify — write "we do not X because Y, which holds as long as Z". A rationale that has quietly become false is worse than no comment, because the next reader trusts it.  
   
 ### Naming and style  
   
@@ -181,6 +195,8 @@ GUIDELINES.md states *what tests must cover and how they behave*. ARCHITECTURE.m
   
 Every public method on a domain or application service has tests for the **happy path**, each **documented failure mode**, and **boundary conditions** (empty, absent, max, zero, negative, duplicate, concurrent if relevant).  
   
+**Classification logic is tested on near-miss input that must NOT match.** `Suggester.classify_pairs` returns one of `supersedes`/`supplements`/`conflicts`/`unrelated` per candidate pair — a suite where every fixture demonstrates one of these firing correctly can't tell you the classifier declines correctly on a pair that merely resembles one of them. For any test asserting a positive classification, pair it with a near-miss input (same domain/subject overlap, different scenario) that must classify as `unrelated`.
+
 Branch and condition coverage are diagnostics, not targets. Coverage drops require justification; coverage increases driven by trivial tests are equally suspect. Bug fixes ship with a regression test that fails before the fix.  
   
 ### Behaviour  
@@ -235,6 +251,7 @@ Pure docs, chore, test, or behaviour-preserving refactor changes do **not** bump
 - [ ] Package version bumped per SemVer (§ Versioning) if behaviour changed — proposed and confirmed before applying.  
 - [ ] RUNBOOK.md updated with lessons learned.  
 - [ ] Conventional Commits format.  
+- [ ] Pull request created if a remote git repository is set up.  
   
 ---  
   
