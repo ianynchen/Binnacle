@@ -1,0 +1,5 @@
+packages:
+  - "packages/binnacle-ui"
+allowBuilds:
+  '@biomejs/biome': true
+  esbuild: true

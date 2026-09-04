@@ -6,6 +6,13 @@ resolution-markers = [
     "python_full_version < '3.15'",
 ]
 
+[manifest]
+members = [
+    "binnacle-core",
+    "binnacle-router",
+    "binnacle-workspace",
+]
+
 [[package]]
 name = "annotated-types"
 version = "0.8.0"
@@ -80,15 +87,33 @@ wheels = [
 ]
 
 [[package]]
-name = "binnacle"
-version = "0.2.0"
-source = { editable = "." }
+name = "binnacle-core"
+version = "0.3.0"
+source = { editable = "packages/binnacle-core" }
 dependencies = [
     { name = "pgvector" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic" },
     { name = "yoyo-migrations" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "pgvector", specifier = "==0.5.0" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = "==3.3.5" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "yoyo-migrations", specifier = "==9.0.0" },
+]
+
+[[package]]
+name = "binnacle-router"
+version = "0.1.0"
+source = { editable = "packages/binnacle-router" }
+
+[[package]]
+name = "binnacle-workspace"
+version = "0.0.0"
+source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
@@ -101,12 +126,6 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "pgvector", specifier = "==0.5.0" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = "==3.3.5" },
-    { name = "pydantic", specifier = ">=2.9" },
-    { name = "yoyo-migrations", specifier = "==9.0.0" },
-]
 
 [package.metadata.requires-dev]
 dev = [

@@ -1,3 +1,4 @@
+default_install_hook_types: [pre-commit, pre-push]
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
@@ -8,3 +9,18 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+  - repo: local
+    hooks:
+      - id: biome-check
+        name: biome check (binnacle-ui)
+        entry: pnpm --filter binnacle-ui exec biome check --write
+        language: system
+        files: ^packages/binnacle-ui/
+        types_or: [ts, tsx, json]
+        pass_filenames: false
+      - id: full-check
+        name: full check (mypy, import-linter, all tests, ui build) -- same script CI runs
+        entry: bash scripts/check.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

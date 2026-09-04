@@ -15,3 +15,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# JS (binnacle-ui)
+node_modules/
+packages/binnacle-ui/dist/
+*.tsbuildinfo
+coverage/
+.vite/

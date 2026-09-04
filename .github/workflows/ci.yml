@@ -33,16 +33,32 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
       - name: Enable pgvector extension
         run: |
           sudo apt-get update && sudo apt-get install -y postgresql-client
           PGPASSWORD=postgres psql -h localhost -U postgres -d binnacle_test -c "CREATE EXTENSION IF NOT EXISTS vector"
 
-      - name: Install dependencies
-        run: uv sync
+      - name: Install Python dependencies
+        run: uv sync --all-packages
+
+      - name: Install JS dependencies
+        run: pnpm install
 
       - name: Run gates
         run: bash scripts/check.sh
 
+      # Deliberately re-runs the full suite via scripts/check.sh (see "Run gates"
+      # above) as part of running the hook config itself -- this validates that
+      # .pre-commit-config.yaml's full-check hook actually exists and works, not
+      # just that the script does. The duplicate cost is accepted for that guarantee.
       - name: Run pre-commit
-        run: uvx pre-commit run --all-files
+        run: uvx pre-commit run --all-files --hook-stage push
