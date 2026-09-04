@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 170" width="80" height="170" role="img" aria-label="Binnacle icon">
+  <g transform="translate(-34,10)">
+    <rect x="50" y="130" width="60" height="10" rx="3" fill="#16324a"/>
+    <path d="M62,130 L70,60 L90,60 L98,130 Z" fill="#16324a"/>
+    <rect x="66" y="54" width="28" height="10" rx="3" fill="#16324a"/>
+    <circle cx="80" cy="34" r="30" fill="#3d7a6e" stroke="#16324a" stroke-width="3"/>
+    <path d="M80,10 L86,34 L80,58 L74,34 Z" fill="#16324a"/>
+  </g>
+</svg>

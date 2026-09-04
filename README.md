@@ -1,4 +1,4 @@
-# Binnacle
+# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/icon-dark.svg"><img alt="" width="25" height="54" src="docs/assets/icon-light.svg"></picture> Binnacle
 
 A PostgreSQL-backed decision-record library: the fleet's decision record and
 precedent engine. Binnacle stores decisions (scenario / outcome / reasoning),
