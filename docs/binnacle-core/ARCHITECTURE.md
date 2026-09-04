@@ -1,6 +1,6 @@
 # ARCHITECTURE
 
-Architecture for **Binnacle** (contract: `docs/REQUIREMENTS.md`). Binnacle is a
+Architecture for **Binnacle** (contract: `REQUIREMENTS.md`). Binnacle is a
 Python library — the fleet's decision record and precedent engine — storing
 decisions in one PostgreSQL database (relational tables + pgvector), embedded by
 the meridian service. Semantica's decision subsystem informed the design (NFR-3)
@@ -296,7 +296,7 @@ radius. The division of responsibility:
 ## 6. Package Layout and Technology
 
 ```
-src/binnacle/
+packages/binnacle-core/src/binnacle_core/
   domain/        models.py (Decision, Ref, Link, Transition, Actor, enums,
                  CandidatePair, Suggestion, projections)  errors.py
   application/   client.py recorder.py lifecycle.py queue.py query.py
