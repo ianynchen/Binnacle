@@ -9,6 +9,7 @@ resolution-markers = [
 [manifest]
 members = [
     "binnacle-core",
+    "binnacle-router",
     "binnacle-workspace",
 ]
 
@@ -103,6 +104,11 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.9" },
     { name = "yoyo-migrations", specifier = "==9.0.0" },
 ]
+
+[[package]]
+name = "binnacle-router"
+version = "0.1.0"
+source = { editable = "packages/binnacle-router" }
 
 [[package]]
 name = "binnacle-workspace"

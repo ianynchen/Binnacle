@@ -8,7 +8,7 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-members = ["packages/binnacle-core"]
+members = ["packages/binnacle-core", "packages/binnacle-router"]
 
 [dependency-groups]
 dev = [
