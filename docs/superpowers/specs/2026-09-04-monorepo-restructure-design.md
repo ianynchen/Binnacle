@@ -145,12 +145,14 @@ root changelog stops being meaningful once versions diverge.
 `docs/adr/NNNN-<topic>.md`, plain numbered Markdown, immutable once accepted
 — a later reversal is a new, superseding ADR, never an edit to an old one.
 This is a new convention: GUIDELINES §5.2 has required ADRs since it was
-written but never specified where they live or what format they take — that
-gap gets closed, not just referenced, by writing this location and format
-directly into §5.2 (see §5.2 below). Deliberately **not** stored as records
-inside a running binnacle instance: `binnacle-core` itself is one of the
-things this ADR describes restructuring, so recording it there would be
-circular.
+written but never specified where they live or what format they take. This
+spec decides that (here) and uses it immediately for its own ADR (§10 step
+9) — but **writing that decision into GUIDELINES §5.2's own text is
+deliberately deferred to a follow-up after the restructuring lands** (per
+explicit direction), not bundled into this migration. Deliberately **not**
+stored as records inside a running binnacle instance: `binnacle-core` itself
+is one of the things this ADR describes restructuring, so recording it there
+would be circular.
 
 ### 5.2 GUIDELINES.md updates required
 
@@ -158,11 +160,14 @@ circular.
 and `docs/components/*` as flat, singular paths. These become per-package
 (`docs/<package>/REQUIREMENTS.md`, etc.), with `docs/OVERVIEW.md` added as
 the system-level document sitting above them. `§11` (Versioning /
-Definition of Done) gets a note that `CHANGELOG.md` is per-package. `§5.2`
-(Architectural Changes) gets the ADR location and format from this spec's
-§5.1 written in directly — today it mandates ADRs without saying where they
-go, which is the exact kind of undocumented convention this project's own
-§5.3 warns against.
+Definition of Done) gets a note that `CHANGELOG.md` is per-package.
+
+**Not included in this migration:** writing the `docs/adr/` location and
+format (§5.1) into `§5.2`'s own text. `§5.2` still mandates ADRs without
+saying where they go after this change lands — that gap is real and this
+spec's own ADR (§10 step 9) uses the location anyway, but closing the gap in
+GUIDELINES' text is explicitly deferred to a follow-up after the
+restructuring, not bundled into it.
 
 ## 6. Workspace tooling
 
@@ -309,7 +314,8 @@ step in the migration outline (§10) rather than left to be rediscovered.
    `.github/workflows/ci.yml` (loop over packages, add JS steps).
 9. Create `docs/adr/0001-monorepo-restructure.md` recording this change,
    including the DR-6 breaking-change call-out and the SemVer bump it forces.
-10. Update `GUIDELINES.md` per §5.2 above.
+10. Update `GUIDELINES.md`'s path references per §5.2 above (**not** the
+    ADR-location text — that's a deferred follow-up, see §5.2).
 11. Create per-package `CHANGELOG.md` files. **Fold the existing root
     `CHANGELOG.md`'s history into `packages/binnacle-core/CHANGELOG.md`** (not
     left as an "or" — every existing entry describes what is now
@@ -339,3 +345,7 @@ approved.
   spec written before the change exists.
 - **Whether `scripts/check.sh` should self-provision an ephemeral Postgres**
   (§8) — a convenience call for the implementation plan, not this spec.
+- **Writing the ADR location/format into GUIDELINES §5.2's own text** — the
+  location is decided and used (§5.1, §10 step 9), but updating GUIDELINES
+  itself to document it is explicitly deferred to a follow-up after this
+  restructuring lands, not part of this migration.
