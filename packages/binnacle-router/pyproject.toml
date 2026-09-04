@@ -23,3 +23,4 @@ testpaths = ["tests"]
 [tool.importlinter]
 root_package = "binnacle_router"
 include_external_packages = true
+# Contracts deferred to binnacle-router's own future spec (see spec DR-7) -- this section currently enforces nothing.

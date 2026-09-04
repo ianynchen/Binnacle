@@ -1,6 +1,6 @@
 """Binnacle: a PostgreSQL-backed decision-record library.
 
-Deliberately narrow public surface (docs/components/01-configuration-and-client.md
+Deliberately narrow public surface (docs/binnacle-core/components/01-configuration-and-client.md
 "Everything else in the package is reachable only through this surface"): the
 client, its config, the domain vocabulary callers construct/receive, the typed
 error hierarchy, and the ports a caller fulfills.

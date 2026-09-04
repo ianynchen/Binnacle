@@ -1,4 +1,4 @@
-"""Integration tests for the three sweeps (docs/components/04-query-and-assist.md
+"""Integration tests for the three sweeps (docs/binnacle-core/components/04-query-and-assist.md
 "The sweeps"; REQUIREMENTS FR-6.9/FR-7.4/FR-3.4; needs a live Postgres, see
 conftest.pg_dsn): `application.discovery.backfill_embeddings`, `.discover`, and
 `application.archival.archive_stale`, exercised directly against `PostgresStore`
@@ -160,7 +160,7 @@ class TestBackfillEmbeddings:
 
 
 class TestDiscoverNoAllPairs:
-    """docs/components/04 Contract points: "Discovery work is O(k) per new
+    """docs/binnacle-core/components/04 Contract points: "Discovery work is O(k) per new
     decision... MUST NOT contain any all-pairs path" -- the mechanical bound
     the contract demands an explicit test for."""
 

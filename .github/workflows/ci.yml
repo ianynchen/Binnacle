@@ -35,8 +35,6 @@ jobs:
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -58,5 +56,9 @@ jobs:
       - name: Run gates
         run: bash scripts/check.sh
 
+      # Deliberately re-runs the full suite via scripts/check.sh (see "Run gates"
+      # above) as part of running the hook config itself -- this validates that
+      # .pre-commit-config.yaml's full-check hook actually exists and works, not
+      # just that the script does. The duplicate cost is accepted for that guarantee.
       - name: Run pre-commit
         run: uvx pre-commit run --all-files --hook-stage push

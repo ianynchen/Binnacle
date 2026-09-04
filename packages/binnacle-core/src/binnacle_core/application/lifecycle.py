@@ -1,4 +1,4 @@
-"""The Lifecycle Engine (docs/components/03-lifecycle-engine.md; REQUIREMENTS
+"""The Lifecycle Engine (docs/binnacle-core/components/03-lifecycle-engine.md; REQUIREMENTS
 FR-3/4/5; ARCHITECTURE.md I-1..I-4). The ONLY writer of `decisions.status`,
 `links`, and `transitions` — every act below is exactly one `store.transaction()`,
 opening with `lock_decisions` on every row it touches (I-1: concurrent acts

@@ -687,20 +687,30 @@ top-level `binnacle_core` package.
 
 ### The guardrail stack
 
-- **`pre-commit`** (`.pre-commit-config.yaml`): `gitleaks` (hardcoded-secret
-  scanning) and `ruff` (lint + format), run on every commit —
-  `pre-commit install` once, then `pre-commit run --all-files` to check
-  everything.
+- **`pre-commit` stage** (`.pre-commit-config.yaml`, every commit, fast):
+  `gitleaks` (hardcoded-secret scanning), `ruff` + `ruff-format` (lint +
+  format), and Biome for `binnacle-ui`.
+- **`pre-push` stage** (once, before code leaves the machine): the same
+  `scripts/check.sh` gate CI runs — mypy strict, import-linter, and the full
+  test suite for `binnacle-core`/`binnacle-router`, plus lint/typecheck/test/build
+  for `binnacle-ui`.
+- **One-time setup**: `bash scripts/dev-setup.sh` installs the Python and JS
+  dependencies and wires up *both* hook stages — a bare `pre-commit install`
+  alone only installs the `pre-commit` stage, not `pre-push`.
 - **CI** (`.github/workflows/ci.yml`, GitHub Actions): on every push/PR to
-  `main`, spins up a `pgvector/pgvector:pg18` Postgres service, runs
-  `scripts/check.sh` (ruff format/lint, mypy strict, import-linter,
-  `pytest`) and `pre-commit run --all-files`.
+  `main`, spins up a `pgvector/pgvector:pg18` Postgres service, then runs
+  `scripts/check.sh` directly and `pre-commit run --all-files --hook-stage push`
+  (which re-runs the same gate via the hook config, confirming the config
+  itself is intact).
 - **import-linter** (`pyproject.toml` `[tool.importlinter]`): enforces the
   layering `binnacle_core.adapters → binnacle_core.application → binnacle_core.domain`,
   and that `domain`/`application` stay free of DB-driver imports
   (`psycopg`, `yoyo`, `pgvector`).
 
-Run everything locally with `bash scripts/check.sh`.
+Run everything locally with `bash scripts/check.sh` — run it from the repo
+root, since the script uses `packages/...`-relative paths (a bare `pytest`
+from the repo root will similarly fail without `-c packages/binnacle-core/pyproject.toml`
+or a `cd` into the package first).
 
 ## Running the tests
 

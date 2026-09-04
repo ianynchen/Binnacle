@@ -1,4 +1,4 @@
-"""The archival sweep (docs/components/04-query-and-assist.md "The sweeps";
+"""The archival sweep (docs/binnacle-core/components/04-query-and-assist.md "The sweeps";
 REQUIREMENTS FR-3.4). A free function over `StorePort` + `LifecycleEngine`,
 same shape as `query.precedent`/`discovery.backfill_embeddings` -- no state
 held between calls.

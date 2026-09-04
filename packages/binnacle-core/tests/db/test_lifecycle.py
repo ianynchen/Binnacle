@@ -1,5 +1,5 @@
 """Integration tests for LifecycleEngine (needs a live Postgres; see
-conftest.pg_dsn). docs/components/03-lifecycle-engine.md's exit-matrix and acts
+conftest.pg_dsn). docs/binnacle-core/components/03-lifecycle-engine.md's exit-matrix and acts
 tables ARE the spec these tests mirror; REQUIREMENTS FR-3/4/5 resolve any cell
 03 leaves ambiguous.
 

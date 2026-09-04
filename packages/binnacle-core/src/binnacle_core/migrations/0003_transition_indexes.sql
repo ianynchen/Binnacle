@@ -1,4 +1,4 @@
--- Additional transition-scan indexes (docs/components/02-store-and-migrations.md's
+-- Additional transition-scan indexes (docs/binnacle-core/components/02-store-and-migrations.md's
 -- "changes feed (indexed transition scans)" promise, ARCHITECTURE.md §4).
 -- 0002_indexes.sql covers actor- and time-only transition scans
 -- (idx_trans_actor, idx_trans_time) but left two access patterns from

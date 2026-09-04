@@ -263,7 +263,7 @@ class TestGetDecisionAndGetMany:
 
 
 class TestGetManyCompact:
-    """`get_many`'s compact projection (docs/components/04's "Compact
+    """`get_many`'s compact projection (docs/binnacle-core/components/04's "Compact
     projections are SQL-level" contract point) -- `precedent()`'s hydration
     step needs this rather than `get_many` + Python-side trimming."""
 

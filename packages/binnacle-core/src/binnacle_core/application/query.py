@@ -1,4 +1,4 @@
-"""The precedent pipeline (docs/components/04-query-and-assist.md "Query
+"""The precedent pipeline (docs/binnacle-core/components/04-query-and-assist.md "Query
 contracts" / "precedent()"; REQUIREMENTS FR-6.3): embed the question -> k-NN
 against `embeddings` -> attribute filters -> hydrate compact projections in
 similarity order, each carrying its raw score.
@@ -67,7 +67,7 @@ async def precedent(
     under-fills, see `_MAX_OVERFETCH_ROUNDS`/`_OVERFETCH_CAP`) ->
     `store.get_many_compact` (SQL-level projection, `outcome` truncated to
     `compact_outcome_chars` in SQL -- no full-row fetch then trim,
-    docs/components/04's "Compact projections are SQL-level" contract point)
+    docs/binnacle-core/components/04's "Compact projections are SQL-level" contract point)
     -> filter by `domains`/`tiers` if given -> drop superseded/not_promoted
     when `include_dead=False`, each survivor paired with its similarity.
 

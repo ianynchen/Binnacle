@@ -207,7 +207,7 @@ class CompactDecision:
 
 @dataclass(frozen=True)
 class PrecedentHit:
-    """One precedent() result (docs/components/04-query-and-assist.md
+    """One precedent() result (docs/binnacle-core/components/04-query-and-assist.md
     "precedent()"): a compact projection paired with its k-NN cosine
     similarity to the query. `decision.status` carries superseded/`not_promoted`
     history when `include_dead=True` (FR-6.3) — labeled via that field, not
@@ -253,7 +253,7 @@ class QueueItem:
 
     `rationale` and `confidence` are `None`-able: the schema columns are nullable
     (ARCHITECTURE.md §4) and `enqueue` accepts `None` for both — the `shakiest`
-    queue ordering (docs/components/04-query-and-assist.md) depends on this: it
+    queue ordering (docs/binnacle-core/components/04-query-and-assist.md) depends on this: it
     falls back from item confidence to the decision's own confidence to 1.0 last,
     which requires `None` to be representable at every step.
     """
@@ -329,7 +329,7 @@ class HistoryRecord:
 @dataclass(frozen=True)
 class QueueItemView:
     """One open queue item plus the fields its orderings need
-    (docs/components/04-query-and-assist.md `queue()`): the item itself (carrying
+    (docs/binnacle-core/components/04-query-and-assist.md `queue()`): the item itself (carrying
     `proposed_by` as recommender, `rationale`, and its own `confidence`), the
     subject decision's `domain` (the `domain` ordering), and the subject
     decision's own `confidence` (the `shakiest` ordering's fallback when the item
@@ -344,7 +344,7 @@ class QueueItemView:
 
 @dataclass(frozen=True)
 class BackfillSummary:
-    """`backfill_embeddings()` sweep result (docs/components/04-query-and-assist.md
+    """`backfill_embeddings()` sweep result (docs/binnacle-core/components/04-query-and-assist.md
     "The sweeps"): how many decisions from the unembedded backlog were embedded
     and upserted this call. Zero when the backlog is empty -- the sweep no-ops
     cleanly rather than erroring.
@@ -355,7 +355,7 @@ class BackfillSummary:
 
 @dataclass(frozen=True)
 class DiscoverySummary:
-    """`discover()` sweep result (docs/components/04-query-and-assist.md "The
+    """`discover()` sweep result (docs/binnacle-core/components/04-query-and-assist.md "The
     sweeps"; FR-7.4): counts from both halves of the sweep -- relationship
     discovery over newly embedded decisions (`decisions_processed`,
     `suggestions_enqueued`, `suggestions_deduped`, `suggestions_below_floor`),

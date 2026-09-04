@@ -1,4 +1,4 @@
-"""Unit tests for `BinnacleConfig`/`DiscoveryConfig` (docs/components/01
+"""Unit tests for `BinnacleConfig`/`DiscoveryConfig` (docs/binnacle-core/components/01
 "Acceptance": construction matrix — dsn-xor-pool, bad discovery caps rejected,
 two instances with different schemas coexist). No I/O: construction is pure
 validation (FR-8.1's "config-object initialization" — fail at construction,

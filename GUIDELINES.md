@@ -84,7 +84,7 @@ The schema contract can described in several files at once; they must never drif
   
 - The affected **component specs** under `docs/<package>/components/`, and any other touched spec.  
 - **REQUIREMENTS.md / ARCHITECTURE.md** where the contract (FR-3 endpoint catalog, NFR-5 construct set, §8 catalog format) is stated.  
-- `CHANGELOG.md`.  
+- (the affected package's) `CHANGELOG.md`.  
 
 ### 5.2 Architectural Changes
 
@@ -213,7 +213,7 @@ Framework behaviour, trivial accessors, generated code, or implementation detail
   
 ### Versioning  
   
-The package version in `pyproject.toml` follows [SemVer](https://semver.org/) and is bumped **on every change that alters shipped behaviour**:  
+Each package's version (in its own `pyproject.toml` or `package.json`) follows [SemVer](https://semver.org/) and is bumped **on every change that alters shipped behaviour**:  
   
 - **patch** (`0.0.x`) — bug fixes (no behaviour/API addition).  
 - **minor** (`0.x.0`) — backward-compatible enhancements / new features.  

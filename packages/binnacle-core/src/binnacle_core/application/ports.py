@@ -261,8 +261,8 @@ class StorePort(Protocol):
 
     # -- reads -----------------------------------------------------------------
     # Read-only: no `tx` required, a plain pooled connection suffices (no lock
-    # needed, nothing here mutates). See docs/components/02-store-and-migrations.md
-    # ("Reads") and docs/components/04-query-and-assist.md ("Query contracts").
+    # needed, nothing here mutates). See docs/binnacle-core/components/02-store-and-migrations.md
+    # ("Reads") and docs/binnacle-core/components/04-query-and-assist.md ("Query contracts").
 
     async def list_domains(self) -> list[DomainRecord]:
         """FR-2: every registered domain, name-ordered — the read side of
@@ -283,7 +283,7 @@ class StorePort(Protocol):
     async def get_many_compact(
         self, ids: Sequence[UUID], *, compact_chars: int = 200
     ) -> list[CompactDecision]:
-        """`get_many`'s compact projection (docs/components/04's "Compact
+        """`get_many`'s compact projection (docs/binnacle-core/components/04's "Compact
         projections are SQL-level" contract point): the same id-list lookup,
         but selecting only the compact columns with `outcome` truncated to
         `compact_chars` in SQL — no full-row fetch then trim. Exists for

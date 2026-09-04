@@ -1,4 +1,4 @@
-"""Integration tests for `precedent()` (docs/components/04-query-and-assist.md
+"""Integration tests for `precedent()` (docs/binnacle-core/components/04-query-and-assist.md
 "precedent()"; REQUIREMENTS FR-6.3; needs a live Postgres, see conftest.pg_dsn).
 
 Exercises `application.query.precedent` directly against `PostgresStore` +

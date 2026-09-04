@@ -72,7 +72,7 @@ async def test_migrate_dimension_mismatch_raises(pg_dsn: str, scratch_schema: st
 
 
 async def test_apply_rollback_last_reapply(pg_dsn: str, scratch_schema: str) -> None:
-    """Migration cycle test (docs/components/02-store-and-migrations.md Acceptance):
+    """Migration cycle test (docs/binnacle-core/components/02-store-and-migrations.md Acceptance):
     apply all -> rollback the most recently applied migration -> re-apply. Drives yoyo
     directly (the schema already exists via store.migrate()'s preflight, which is the
     only reason PostgresStore.migrate() itself needs to run first)."""

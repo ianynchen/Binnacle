@@ -1,4 +1,4 @@
-"""The `Binnacle` client (docs/components/01-configuration-and-client.md): the
+"""The `Binnacle` client (docs/binnacle-core/components/01-configuration-and-client.md): the
 public face every caller — meridian's UI/API/MCP surface, its sweep jobs, its
 agent tools — programs against. Everything else in the package is reachable
 only through this surface (FR-8.1: library, not authority).
@@ -50,7 +50,7 @@ from binnacle_core.domain.models import (
 class Binnacle:
     """The library's public API. Construction validates `config` and builds the
     store handle, but performs no I/O (`migrate()` is the explicit, host-invoked
-    I/O step, docs/components/01 "Client API"). Every verb takes an explicit
+    I/O step, docs/binnacle-core/components/01 "Client API"). Every verb takes an explicit
     `Actor`; the client validates shape only (`Actor.__post_init__`) — authority
     (I-2) is the Lifecycle Engine's job, per verb, not this class's.
     """

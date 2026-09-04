@@ -1,4 +1,4 @@
-"""PostgreSQL store adapter (ARCHITECTURE.md §4 / §4.1; docs/components/02-store-and-migrations.md).
+"""PostgreSQL store adapter (ARCHITECTURE.md §4 / §4.1; docs/binnacle-core/components/02-store-and-migrations.md).
 
 The only place binnacle touches PostgreSQL: migrations, transactions, and the
 write primitives the Lifecycle Engine composes above this layer. All objects
@@ -92,7 +92,7 @@ _DEFAULT_RELEVANT_STATUS = frozenset({"current"})
 _EXPORT_SCHEMA_VERSION = 1
 
 # history()'s supersession-chain CTEs walk `links` kind SUPERSEDES, which the
-# Lifecycle Engine keeps acyclic by construction (docs/ARCHITECTURE.md §4: "checked
+# Lifecycle Engine keeps acyclic by construction (docs/binnacle-core/ARCHITECTURE.md §4: "checked
 # in Lifecycle Engine via chain walk, not a DB constraint") — but that engine
 # doesn't exist yet, and even once it does, a read path shouldn't trust writes it
 # didn't validate itself (defense-in-depth). Both CTEs below track visited ids and
@@ -211,7 +211,7 @@ def _escape_ilike(text: str) -> str:
 
 
 class PostgresStore:
-    """The only adapter touching PostgreSQL. See docs/components/02-store-and-migrations.md."""
+    """The only adapter touching PostgreSQL. See docs/binnacle-core/components/02-store-and-migrations.md."""
 
     def __init__(
         self,
@@ -271,7 +271,7 @@ class PostgresStore:
 
     async def migrate(self) -> None:
         """Apply pending migrations, then verify the migrated VECTOR(n) dimension
-        matches `embedding_dim` (docs/components/02-store-and-migrations.md).
+        matches `embedding_dim` (docs/binnacle-core/components/02-store-and-migrations.md).
 
         Raises:
             ConfigError: the pgvector extension is not installed (a provisioning

@@ -1,4 +1,4 @@
-"""The backfill and discovery sweeps (docs/components/04-query-and-assist.md
+"""The backfill and discovery sweeps (docs/binnacle-core/components/04-query-and-assist.md
 "The sweeps"; REQUIREMENTS FR-6.9/FR-7.4). Free functions over `StorePort` +
 the `Embedder`/`Suggester` ports (plus `LifecycleEngine` for the
 promotion-recommendation half of `discover`), same shape as

@@ -1,5 +1,5 @@
 """Integration tests for the `Binnacle` public client (needs a live Postgres;
-see conftest.pg_dsn). docs/components/01-configuration-and-client.md's
+see conftest.pg_dsn). docs/binnacle-core/components/01-configuration-and-client.md's
 "Acceptance" is the spec these tests mirror: an embedder-shaped test drives
 record -> recommend -> promote_refined -> query -> export end-to-end through
 the public API only, plus the two boundary-error cases named there.
@@ -69,7 +69,7 @@ class TestConstruction:
 
 
 class TestNarrativeAcceptance:
-    """docs/components/01 "Acceptance": record (agent) -> recommend ->
+    """docs/binnacle-core/components/01 "Acceptance": record (agent) -> recommend ->
     promote_refined (human, generalized subjects + amended outcome) ->
     relevant/compact -> history shows PROMOTED_FROM + refined payload ->
     export — driven entirely through the public `Binnacle` API."""
@@ -205,7 +205,7 @@ class TestDomainRegistry:
         self, bn: Binnacle
     ) -> None:
         """`add_domain` re-registering an existing name is the documented
-        reactivation path (docs/components/01) -- no separate "reactivate"
+        reactivation path (docs/binnacle-core/components/01) -- no separate "reactivate"
         verb exists."""
         await bn.deactivate_domain("eng", actor=HUMAN, reason="reorg")
         with pytest.raises(InactiveDomain):
@@ -283,7 +283,7 @@ class TestQueueResolutionDelegation:
 
 
 class TestExport:
-    """FR-6.6 (docs/components/04's "Export content check"): `bn.export()`
+    """FR-6.6 (docs/binnacle-core/components/04's "Export content check"): `bn.export()`
     returns a JSON-safe dict -- `json.dumps` succeeds with no further
     conversion, embeddings never appear, the domains registry is included,
     and a spot re-hydration of one exported decision matches the stored

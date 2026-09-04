@@ -1,5 +1,5 @@
 """The narrative end-to-end test (REQUIREMENTS §7 "The Life of a Decision" --
-authoritative text; docs/components/04-query-and-assist.md's export/precedent
+authoritative text; docs/binnacle-core/components/04-query-and-assist.md's export/precedent
 contracts). One decision's whole life, told through the PUBLIC `Binnacle`
 client only (no store/engine reach-ins) -- record -> same-session short-term
 supersede -> an engine AND an agent recommendation -> the human gate

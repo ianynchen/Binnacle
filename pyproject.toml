@@ -25,4 +25,4 @@ target-version = "py313"
 line-length = 100
 
 [tool.ruff.lint.isort]
-known-first-party = ["binnacle_core"]
+known-first-party = ["binnacle_core", "binnacle_router"]

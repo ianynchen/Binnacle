@@ -1,4 +1,4 @@
-"""JSON export shaping (REQUIREMENTS FR-6.6; docs/components/04-query-and-assist.md
+"""JSON export shaping (REQUIREMENTS FR-6.6; docs/binnacle-core/components/04-query-and-assist.md
 "export()"): `store.export_rows()` returns an `ExportBundle` of typed dataclasses
 (`UUID`, `datetime`, `Actor`) -- this module's only job is turning that into the
 JSON-safe dict `Binnacle.export()` hands callers directly, `json.dumps`-able with

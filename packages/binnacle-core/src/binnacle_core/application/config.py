@@ -1,4 +1,4 @@
-"""`BinnacleConfig` (docs/components/01-configuration-and-client.md): the single
+"""`BinnacleConfig` (docs/binnacle-core/components/01-configuration-and-client.md): the single
 caller-constructed config object the library takes (FR-8.1) — no env/file/global
 reads, fail-at-construction validation, multiple independently configured
 instances coexist (nothing here is process-global).
@@ -53,7 +53,7 @@ class DiscoveryConfig(BaseModel):
 
 
 class BinnacleConfig(BaseModel):
-    """docs/components/01-configuration-and-client.md VERBATIM. Constructing this
+    """docs/binnacle-core/components/01-configuration-and-client.md VERBATIM. Constructing this
     object performs no I/O — it only validates shape (dsn XOR pool, discovery
     caps); `Binnacle.__init__` builds the store from it, still without I/O."""
 

@@ -69,7 +69,7 @@ declared in `application`; `domain` imports neither.
 ## Migrations layout
 
 ```
-src/binnacle/migrations/
+packages/binnacle-core/src/binnacle_core/migrations/
   0001_schema.sql          # + 0001_schema.rollback.sql
   0002_indexes.sql         # + rollback
   ...

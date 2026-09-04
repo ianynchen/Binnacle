@@ -22,6 +22,8 @@ and each package's own README for installation and usage.
 This is a `uv` workspace (Python: `binnacle-core`, `binnacle-router`) plus a
 `pnpm` workspace (JS: `binnacle-ui`). One-time setup:
 
+Prerequisites: [uv](https://docs.astral.sh/uv/), [pnpm](https://pnpm.io/), Node 22+, and (for the full `pre-push`/CI gate) a local PostgreSQL with the `pgvector` extension.
+
 ```bash
 bash scripts/dev-setup.sh
 ```
