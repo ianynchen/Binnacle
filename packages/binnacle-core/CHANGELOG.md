@@ -6,6 +6,8 @@ All notable changes to `binnacle-core` are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-04
+
 ### Changed
 
 - **Breaking:** package renamed from `binnacle` to `binnacle-core`
