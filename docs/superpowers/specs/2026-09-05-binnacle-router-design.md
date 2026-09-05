@@ -231,9 +231,31 @@ handlers); the host chooses transport — mounted over ASGI beside the REST
 router, or stdio. This is the same philosophy as shipping an `APIRouter`
 instead of an app.
 
-**Requires verification at plan time:** that the chosen MCP SDK's server object
-can in fact be ASGI-mounted alongside a FastAPI app on one event loop. This is
-asserted here as design intent, not as verified fact — no spike has been run.
+**Verified by spike (2026-09-05), not assumed.** An MCP server mounts inside a
+FastAPI app and both surfaces serve from one app, one event loop:
+`initialize` returned 200 with a session id while the REST route kept working.
+Three findings the implementation must honor:
+
+1. **The SDK is on 2.x, where `FastMCP` was renamed `MCPServer`**
+   (`mcp.server.mcpserver`). Earlier drafts of this design used v1 naming.
+2. **`streamable_http_app()` must be called before `session_manager` is
+   accessed** — the manager is created lazily by it — **and the host must wire
+   `session_manager.run()` into its own lifespan.** Without that, every request
+   reaches the transport and dies with `RuntimeError: Task group is not
+   initialized`. This is the single most likely integration mistake, and it
+   fails at request time rather than at startup.
+3. **DNS-rebinding protection is on by default** and validates the `Host`
+   header, returning `421 Misdirected Request` on mismatch. A host mounting
+   behind a proxy or on a non-default hostname must pass
+   `TransportSecuritySettings(allowed_hosts=..., allowed_origins=...)`.
+
+Also confirmed: `streamable_http_path` defaults to `/mcp`, so mounting the app
+at `/binnacle/v1/mcp` yields the doubled `/binnacle/v1/mcp/mcp`. Pass
+`streamable_http_path="/"` when mounting under a prefix to get the clean path.
+
+Since this wiring is the host's to get right, `binnacle-router`'s README must
+carry the working recipe rather than leaving each host to rediscover findings
+2 and 3.
 
 ## 6. Actor attestation
 
@@ -367,8 +389,8 @@ actor-attestation and package-structure decisions (§6, §7) bind both.
   synchronously. At NFR-5's stated scale ("thousands, not millions") a single
   response is fine; a streaming variant is a real question only if that bound
   stops holding.
-- **MCP SDK ASGI-mounting** — §5.4's verification item, to be settled by a
-  spike at plan time before the transport design is locked.
+- ~~**MCP SDK ASGI-mounting**~~ **Resolved (2026-09-05) by spike:** confirmed
+  working; three integration requirements recorded in §5.4.
 - **Should `record_decision` expose FR-1.6's caller-supplied `decision_id`?**
   Idempotent recording exists so retries don't duplicate, and a transparently
   retried MCP tool call is exactly that scenario — the agent may not even know a
