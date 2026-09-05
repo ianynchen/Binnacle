@@ -316,7 +316,18 @@ class Binnacle:
         call rather than a field on `Page`: embedding it would charge every page
         fetch for a COUNT(*) that most fetches do not need. The value drifts as
         decisions are recorded or archived concurrently -- it is a UI
-        affordance, not a figure consistent with the page in hand."""
+        affordance, not a figure consistent with the page in hand.
+
+        This call has no `sort` parameter, so it cannot replicate the
+        `valid_until IS NOT NULL` guard `relevant()` silently adds when called
+        with `sort="valid_until"`. A caller pairing this count with such a
+        page -- e.g. a dashboard's "expiring soonest" tile -- will see a
+        larger number than the page can ever fill, since this count still
+        includes decisions that never expire. See
+        `StorePort.relevant_count`'s docstring for the recommended workaround
+        (an `expiring_before` filter on both calls, or treating this as an
+        upper bound rather than an exact total for that one sort key).
+        """
         return await self._store.relevant_count(
             domains=domains,
             status=status,

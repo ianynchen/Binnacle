@@ -427,8 +427,22 @@ class StorePort(Protocol):
         include_archived: bool = False,
     ) -> int:
         """FR-6.10: how many decisions match `relevant()`'s filters. Takes no
-        presentation parameters -- sort, cursor, and limit cannot affect a
-        count."""
+        presentation parameters -- cursor and limit cannot affect a count.
+
+        `sort` is the one exception: `relevant()` silently adds
+        `valid_until IS NOT NULL` to its `WHERE` when called with
+        `sort="valid_until"` (a decision that never expires has no position in
+        an expiry ordering), and this call has no `sort` parameter to
+        replicate that with. A caller pairing this count with a
+        `sort="valid_until"` page — e.g. a dashboard's "expiring soonest"
+        tile — will see a count that includes never-expiring decisions the
+        page never shows. Do not drop the guard to make them agree: it is load
+        bearing for the `valid_until` keyset predicate, which cannot compare
+        against NULL. Instead, that caller should add its own
+        `expiring_before` filter (which already excludes NULL `valid_until`)
+        to both calls, or otherwise treat this count as an upper bound for a
+        `sort="valid_until"` page rather than an exact match.
+        """
         ...
 
     async def history(self, decision_id: UUID) -> HistoryRecord:
