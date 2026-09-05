@@ -84,10 +84,20 @@ support (§5).
 `relevant()`'s return type changes from a bare list to a page envelope:
 
 ```python
-class Page[T](BaseModel):
+@dataclass(frozen=True)
+class Page[T]:
     items: list[T]
     next_cursor: str | None  # opaque; None when the page is the last one
 ```
+
+**Corrected 2026-09-05 (as-built).** This spec originally proposed
+`class Page[T](BaseModel)`. Reading `domain/models.py` during planning showed
+every *read* model in this package is a frozen dataclass — `CompactDecision`,
+`DomainRecord`, `HistoryRecord`, `QueueItemView` — while pydantic is reserved
+for *input* models (`Ref`, `OptionConsidered`, `NewDecision`). `Page` follows
+the read-model convention (GUIDELINES §13.5), and this block is corrected to
+match what shipped rather than left describing a proposal (§5.3: code is
+authoritative for existence).
 
 Callers resume with `after: str | None = None`. The cursor is **opaque to the
 caller and encoded by `binnacle-core`** — a base64 payload carrying the sort
@@ -102,10 +112,11 @@ sort value plus tiebreaker, while backend-supplied tokens (DynamoDB
 entirely different shape. A `str` accommodates both; a typed cursor would make
 adopting such a backend a breaking API change.
 
-**Verify at plan time:** `class Page[T](BaseModel)` uses PEP 695 generic
-syntax. Python ≥3.13 supports it, but pydantic v2's handling of that
-*specific* form should be confirmed rather than assumed — fall back to
-`Generic[T]` if it isn't clean.
+~~**Verify at plan time:** pydantic v2's handling of PEP 695 generic
+syntax.~~ **Moot (2026-09-05):** `Page` is a frozen dataclass, not a pydantic
+model (see the correction above), so pydantic's generic handling never enters
+the picture. PEP 695 syntax on a dataclass is native to Python ≥3.13, which
+this package already requires.
 
 **Why an envelope, when an input-only cursor would have been non-breaking:**
 because an input-only cursor does not actually work. It requires the caller to
