@@ -467,6 +467,45 @@ class TestEvidenceFilter:
         assert await store.relevant_count(evidence=("session", "no-such")) == 0
 
 
+class TestExpiringBeforeFilter:
+    """Task 9: `expiring_before` matches decisions whose `valid_until` is set
+    and falls before the given horizon. A decision with no `valid_until`
+    never expires, so it must never appear -- the curation journey is 'renew
+    these deliberately before they lapse', not 'here is everything, some of
+    which never lapses'."""
+
+    async def test_matches_only_decisions_expiring_within_the_window(
+        self, store: PostgresStore
+    ) -> None:
+        soon = datetime.now(UTC) + timedelta(days=7)
+        far = datetime.now(UTC) + timedelta(days=30)
+        expiring = await _seed(store, _decision(valid_until=soon), [1.0] * DIM)
+        await _seed(store, _decision(valid_until=None), [1.0] * DIM)  # never expires
+        await _seed(store, _decision(valid_until=far), [1.0] * DIM)  # outside the window
+
+        horizon = datetime.now(UTC) + timedelta(days=14)
+        page = await store.relevant(expiring_before=horizon, limit=50)
+
+        assert [d.id for d in page.items] == [expiring]
+        assert await store.relevant_count(expiring_before=horizon) == 1
+
+    async def test_sorting_by_valid_until_excludes_never_expiring_decisions(
+        self, store: PostgresStore
+    ) -> None:
+        """Task 4's `sort="valid_until"` guard (`AND d.valid_until IS NOT
+        NULL`) is a separate condition from this filter -- this confirms the
+        two compose without conflicting: sorting by expiry still excludes a
+        decision with none, independent of whether `expiring_before` is set."""
+        await _seed(store, _decision(valid_until=None), [1.0] * DIM)
+        soon = datetime.now(UTC) + timedelta(days=7)
+        expiring = await _seed(store, _decision(valid_until=soon), [1.0] * DIM)
+
+        page = await store.relevant(sort="valid_until", order="asc", limit=50)
+
+        assert [d.id for d in page.items] == [expiring]
+        assert await store.relevant_count() == 2
+
+
 class TestChangesTiebreaker:
     """Task 7: `changes()` gains `after_id` tiebreaker to handle transitions
     sharing the same timestamp. Without it, they reappear on the next

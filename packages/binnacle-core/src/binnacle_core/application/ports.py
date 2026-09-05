@@ -304,6 +304,7 @@ class StorePort(Protocol):
         subject: tuple[str, str] | None = None,
         evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
         sort: Literal[
@@ -325,6 +326,7 @@ class StorePort(Protocol):
         subject: tuple[str, str] | None = None,
         evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
         sort: Literal[
@@ -345,6 +347,7 @@ class StorePort(Protocol):
         subject: tuple[str, str] | None = None,
         evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
         sort: Literal[
@@ -362,9 +365,13 @@ class StorePort(Protocol):
         "or unscoped" fallback: citing evidence is an exact question, and a
         decision that cites nothing does not answer it. `as_of` filters
         `valid_from`/`valid_until` (default now, excluding decisions whose
-        `valid_until` has passed). `text` is an ILIKE substring filter over
-        scenario/outcome/reasoning. `include_archived` adds `"archived"` to the
-        effective status set.
+        `valid_until` has passed). `expiring_before` matches decisions whose
+        `valid_until` is set and falls before that timestamp — decisions with no
+        `valid_until` never match (a decision that never expires is not
+        "expiring soon"); this is independent of, and composes without conflict
+        with, `sort="valid_until"`'s own `valid_until IS NOT NULL` guard below.
+        `text` is an ILIKE substring filter over scenario/outcome/reasoning.
+        `include_archived` adds `"archived"` to the effective status set.
 
         Ordered by `sort` (default `"recorded_at"`) and `order` (default
         `"desc"`), then id ascending as a deterministic tiebreaker. `sort`'s four
@@ -406,6 +413,7 @@ class StorePort(Protocol):
         subject: tuple[str, str] | None = None,
         evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
     ) -> int:

@@ -764,6 +764,7 @@ class PostgresStore:
         subject: tuple[str, str] | None,
         evidence: tuple[str, str] | None,
         as_of: datetime | None,
+        expiring_before: datetime | None,
         text: str | None,
         include_archived: bool,
     ) -> tuple[str, dict[str, Any]]:
@@ -806,6 +807,9 @@ class PostgresStore:
             )
             params["ev_kind"] = ev_kind
             params["ev_id"] = ev_id
+        if expiring_before is not None:
+            conditions.append("(d.valid_until IS NOT NULL AND d.valid_until < %(expiring_before)s)")
+            params["expiring_before"] = expiring_before
         if text is not None:
             conditions.append(
                 "(d.scenario ILIKE %(text)s OR d.outcome ILIKE %(text)s OR d.reasoning ILIKE %(text)s)"
@@ -860,6 +864,7 @@ class PostgresStore:
         subject: tuple[str, str] | None = None,
         evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
         sort: Literal[
@@ -881,6 +886,7 @@ class PostgresStore:
         subject: tuple[str, str] | None = None,
         evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
         sort: Literal[
@@ -901,6 +907,7 @@ class PostgresStore:
         subject: tuple[str, str] | None = None,
         evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
         sort: Literal[
@@ -919,6 +926,7 @@ class PostgresStore:
             subject=subject,
             evidence=evidence,
             as_of=as_of,
+            expiring_before=expiring_before,
             text=text,
             include_archived=include_archived,
         )
@@ -1006,6 +1014,7 @@ class PostgresStore:
         subject: tuple[str, str] | None = None,
         evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
     ) -> int:
@@ -1016,6 +1025,7 @@ class PostgresStore:
             subject=subject,
             evidence=evidence,
             as_of=as_of,
+            expiring_before=expiring_before,
             text=text,
             include_archived=include_archived,
         )

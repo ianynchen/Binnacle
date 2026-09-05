@@ -176,6 +176,7 @@ class Binnacle:
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         projection: Literal["compact"] = "compact",
         sort: Literal[
@@ -196,6 +197,7 @@ class Binnacle:
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         *,
         projection: Literal["full"],
@@ -216,6 +218,7 @@ class Binnacle:
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         projection: Literal["compact", "full"] = "compact",
         sort: Literal[
@@ -234,9 +237,10 @@ class Binnacle:
         has a default); passing a non-literal `projection` value falls back to
         this signature's `Page[CompactDecision] | Page[Decision]`.
 
-        `evidence` is a plain filter -- see `StorePort.relevant`'s docstring
-        for its exact semantics (no "or unscoped" fallback the way `subject`
-        has).
+        `evidence` and `expiring_before` are plain filters -- see
+        `StorePort.relevant`'s docstring for their exact semantics (evidence
+        has no "or unscoped" fallback the way `subject` does; expiring_before
+        excludes decisions with no `valid_until`).
 
         `sort` (default `"recorded_at"`) and `order` (default `"desc"`)
         reproduce the pre-existing ordering unless overridden -- see
@@ -268,6 +272,7 @@ class Binnacle:
                 subject=subject,
                 evidence=evidence,
                 as_of=as_of,
+                expiring_before=expiring_before,
                 text=text,
                 include_archived=include_archived,
                 sort=sort,
@@ -283,6 +288,7 @@ class Binnacle:
             subject=subject,
             evidence=evidence,
             as_of=as_of,
+            expiring_before=expiring_before,
             text=text,
             include_archived=include_archived,
             sort=sort,
@@ -300,6 +306,7 @@ class Binnacle:
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
     ) -> int:
@@ -316,6 +323,7 @@ class Binnacle:
             subject=subject,
             evidence=evidence,
             as_of=as_of,
+            expiring_before=expiring_before,
             text=text,
             include_archived=include_archived,
         )
