@@ -49,5 +49,5 @@ class TestRelevantCount:
         await bn.record(_nd(domain="product", scenario="pricing tier rollout"), actor=AGENT)
 
         in_arch = await bn.relevant(domains=["architecture"], limit=1000)
-        assert await bn.relevant_count(domains=["architecture"]) == len(in_arch)
+        assert await bn.relevant_count(domains=["architecture"]) == len(in_arch.items)
         assert await bn.relevant_count(domains=["nonexistent"]) == 0

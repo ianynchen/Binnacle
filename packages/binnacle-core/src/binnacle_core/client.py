@@ -40,6 +40,7 @@ from binnacle_core.domain.models import (
     DomainRecord,
     HistoryRecord,
     NewDecision,
+    Page,
     PrecedentHit,
     QueueItemView,
     Tier,
@@ -181,8 +182,9 @@ class Binnacle:
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         include_archived: bool = False,
-    ) -> list[CompactDecision]: ...
+    ) -> Page[CompactDecision]: ...
 
     @overload
     async def relevant(
@@ -200,8 +202,9 @@ class Binnacle:
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         include_archived: bool = False,
-    ) -> list[Decision]: ...
+    ) -> Page[Decision]: ...
 
     async def relevant(
         self,
@@ -217,19 +220,24 @@ class Binnacle:
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         include_archived: bool = False,
-    ) -> "list[CompactDecision] | list[Decision]":
+    ) -> "Page[CompactDecision] | Page[Decision]":
         """FR-6.1 relevance query. `projection='compact'` (default) truncates
         `outcome` to `config.compact_outcome_chars` in SQL (FR-6.7) and returns
-        `list[CompactDecision]`; `'full'` returns the untruncated
-        `list[Decision]`. The two `@overload`s above narrow the return type at
+        `Page[CompactDecision]`; `'full'` returns the untruncated
+        `Page[Decision]`. The two `@overload`s above narrow the return type at
         each call site for a literal `projection` (the common case, since it
         has a default); passing a non-literal `projection` value falls back to
-        this signature's `list[CompactDecision] | list[Decision]`.
+        this signature's `Page[CompactDecision] | Page[Decision]`.
 
         `sort` (default `"recorded_at"`) and `order` (default `"desc"`)
         reproduce the pre-existing ordering unless overridden -- see
         `StorePort.relevant`'s docstring for the four closed sort keys.
+
+        `after` resumes from a previous page's `Page.next_cursor` (`None` for
+        the first page). See `StorePort.relevant`'s docstring for why the
+        cursor is store-minted rather than caller-constructed.
 
         Dispatches to one of two `self._store.relevant(...)` calls, each
         passing a concrete `compact_chars` (an `int` literal or `None`)
@@ -240,6 +248,10 @@ class Binnacle:
         parameters that combinatorial check exceeds mypy's limit ("Not all
         union combinations were tried"). Passing a literal per branch keeps
         each call resolvable to exactly one overload.
+
+        Raises:
+            InvalidCursor: `after` is malformed, or was minted under a
+                different `sort`/`order` than this call's.
         """
         if projection == "compact":
             return await self._store.relevant(
@@ -253,6 +265,7 @@ class Binnacle:
                 sort=sort,
                 order=order,
                 limit=limit,
+                after=after,
                 compact_chars=self._config.compact_outcome_chars,
             )
         return await self._store.relevant(
@@ -266,6 +279,7 @@ class Binnacle:
             sort=sort,
             order=order,
             limit=limit,
+            after=after,
             compact_chars=None,
         )
 

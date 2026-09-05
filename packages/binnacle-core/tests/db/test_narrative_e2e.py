@@ -110,7 +110,7 @@ class TestLifeOfADecision:
         # Nothing about recording waited on an LLM, an embedding call, or a
         # human." -- no backfill/discover has run yet, and it's already here.
         findable = await bn.relevant(domains=[DOMAIN], subject=SUBJECT)
-        assert any(d.id == backoff.decision_id for d in findable)  # type: ignore[union-attr]
+        assert any(d.id == backoff.decision_id for d in findable.items)  # type: ignore[union-attr]
 
         # -- 7.2 The working life (short-term tier) --------------------------
         # "Later that session the approach changes -- batching makes retries
@@ -173,7 +173,7 @@ class TestLifeOfADecision:
         h_dup = await bn.history(dup.decision_id)
         assert h_dup.decision.status == "discarded"
         default_view = await bn.relevant(domains=[DOMAIN])
-        assert dup.decision_id not in {d.id for d in default_view}  # type: ignore[union-attr]
+        assert dup.decision_id not in {d.id for d in default_view.items}  # type: ignore[union-attr]
         assert dup.decision_id in {d.decision_id for d in await bn.get_many([dup.decision_id])}
 
         # "Meanwhile the nightly sweep (a meridian job)... also nominates
@@ -253,7 +253,7 @@ class TestLifeOfADecision:
         # unscoped, so a subject dossier for the ORIGINAL component still
         # surfaces it (FR-6.1: subject match OR unscoped).
         dossier = await bn.relevant(domains=[DOMAIN], subject=SUBJECT, tier="long_term")
-        assert any(d.id == refined.decision_id for d in dossier)  # type: ignore[union-attr]
+        assert any(d.id == refined.decision_id for d in dossier.items)  # type: ignore[union-attr]
 
         # "For another item -- an agent's 'we should use tabs not spaces' --
         # you tap decline with reason: not_promoted, kept as signal,
@@ -326,14 +326,14 @@ class TestLifeOfADecision:
             actor=AGENT,
         )
         no_ceremony = await bn.relevant(domains=[DOMAIN])
-        assert waiver.decision_id not in {d.id for d in no_ceremony}  # type: ignore[union-attr]
+        assert waiver.decision_id not in {d.id for d in no_ceremony.items}  # type: ignore[union-attr]
         # no status transition was involved -- purely a read-time filter.
         h_waiver = await bn.history(waiver.decision_id)
         assert h_waiver.decision.status == "current"
         # an `as_of` from before it expired still finds it (the window was real).
         before_expiry = just_expired - timedelta(hours=1)
         as_of_before_expiry = await bn.relevant(domains=[DOMAIN], as_of=before_expiry)
-        assert waiver.decision_id in {d.id for d in as_of_before_expiry}  # type: ignore[union-attr]
+        assert waiver.decision_id in {d.id for d in as_of_before_expiry.items}  # type: ignore[union-attr]
 
         # "A year on, a redesign `supersedes` it outright: new decision,
         # link, `superseded` status -- executed by a human, because every
@@ -390,14 +390,14 @@ class TestLifeOfADecision:
         assert h_pool.decision.status == "current"  # its open queue item stopped the clock
 
         after_archival = await bn.relevant(domains=[DOMAIN])
-        assert tabs.decision_id not in {d.id for d in after_archival}  # type: ignore[union-attr]
-        assert waiver.decision_id not in {d.id for d in after_archival}  # type: ignore[union-attr]
+        assert tabs.decision_id not in {d.id for d in after_archival.items}  # type: ignore[union-attr]
+        assert waiver.decision_id not in {d.id for d in after_archival.items}  # type: ignore[union-attr]
         with_archived = await bn.relevant(
             domains=[DOMAIN],
             status=["current", "not_promoted", "superseded"],
             include_archived=True,
         )
-        assert tabs.decision_id in {d.id for d in with_archived}  # type: ignore[union-attr]
+        assert tabs.decision_id in {d.id for d in with_archived.items}  # type: ignore[union-attr]
         assert tabs.decision_id in {d.decision_id for d in await bn.get_many([tabs.decision_id])}
 
         revive_item_id = await bn.recommend(

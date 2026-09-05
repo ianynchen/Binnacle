@@ -22,6 +22,7 @@ from binnacle_core.domain.models import (
     ExportBundle,
     HistoryRecord,
     LinkKind,
+    Page,
     PromotionAssessment,
     QueueItem,
     QueueItemView,
@@ -309,8 +310,9 @@ class StorePort(Protocol):
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: int = 200,
-    ) -> list[CompactDecision]: ...
+    ) -> Page[CompactDecision]: ...
 
     @overload
     async def relevant(
@@ -328,8 +330,9 @@ class StorePort(Protocol):
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: None,
-    ) -> list[Decision]: ...
+    ) -> Page[Decision]: ...
 
     async def relevant(
         self,
@@ -346,8 +349,9 @@ class StorePort(Protocol):
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: int | None = 200,
-    ) -> list[CompactDecision] | list[Decision]:
+    ) -> Page[CompactDecision] | Page[Decision]:
         """FR-6.1: decisions matching `domains` (default all), `status` (default
         `{"current"}`), `tier`, and `subject` — subject-ref match **or** unscoped
         (no subject refs at all). `as_of` filters `valid_from`/`valid_until`
@@ -363,15 +367,26 @@ class StorePort(Protocol):
         excludes decisions with no expiry, since ordering by a column that's
         NULL for most rows is meaningless).
 
-        Projection: `compact_chars` an `int` returns `list[CompactDecision]` with
+        Pagination: returns a `Page` carrying `items` plus an opaque
+        `next_cursor` (`None` on the last page) — pass that cursor back as
+        `after` to fetch the next page. The cursor is minted by the store
+        (not constructible by a caller) because `last_touched_at` is derived
+        and absent from `Decision`/`CompactDecision`, so a caller could not
+        build the next cursor from what it received.
+
+        Projection: `compact_chars` an `int` returns `Page[CompactDecision]` with
         `outcome` truncated to that length **in SQL** (no fetch-then-trim, FR-6.7);
-        `compact_chars=None` returns the full `list[Decision]`. The two
+        `compact_chars=None` returns the full `Page[Decision]`. The two
         `@overload`s above narrow the return type at each call site on a
         literal/omitted vs. `None` `compact_chars`, so callers get
-        `list[CompactDecision]`/`list[Decision]` without a cast; this last
+        `Page[CompactDecision]`/`Page[Decision]` without a cast; this last
         signature is the Protocol's structurally-checked one, and conforming
         implementations (e.g. `PostgresStore.relevant`) carry the same
         overload pair plus one real implementation.
+
+        Raises:
+            InvalidCursor: `after` is malformed, or was minted under a
+                different `sort`/`order` than this call's.
         """
         ...
 

@@ -96,7 +96,7 @@ class TestNarrativeAcceptance:
         # relevant/compact: the long-term refined decision is visible, current,
         # and its outcome is truncated per config.compact_outcome_chars.
         compact = await bn.relevant(domains=["eng"], tier="long_term")
-        assert any(d.id == refined.decision_id for d in compact)  # type: ignore[union-attr]
+        assert any(d.id == refined.decision_id for d in compact.items)  # type: ignore[union-attr]
 
         # history() on the SOURCE shows the PROMOTED_FROM link and the refined
         # transition payload (FR-4.6).
@@ -234,15 +234,15 @@ class TestQueryDelegation:
         await client.add_domain("eng", "engineering", actor=HUMAN)
         await client.record(_nd(outcome="a very long outcome string indeed"), actor=AGENT)
         compact = await client.relevant(domains=["eng"])
-        assert compact  # type: ignore[truthy-bool]
-        assert all(len(d.outcome_truncated) <= 5 for d in compact)  # type: ignore[union-attr]
+        assert compact.items  # type: ignore[truthy-bool]
+        assert all(len(d.outcome_truncated) <= 5 for d in compact.items)  # type: ignore[union-attr]
         await client.aclose()
 
     async def test_relevant_full_projection_untruncated(self, bn: Binnacle) -> None:
         long_outcome = "x" * 500
         await bn.record(_nd(outcome=long_outcome), actor=AGENT)
         full = await bn.relevant(domains=["eng"], projection="full")
-        assert any(d.outcome == long_outcome for d in full)  # type: ignore[union-attr]
+        assert any(d.outcome == long_outcome for d in full.items)  # type: ignore[union-attr]
 
     async def test_queue_returns_open_recommendation(self, bn: Binnacle) -> None:
         source = await bn.record(_nd(), actor=AGENT)

@@ -379,7 +379,9 @@ class TestRelevantSorting:
         default = await store.relevant(limit=50)
         explicit = await store.relevant(sort="recorded_at", order="desc", limit=50)
 
-        assert [d.id for d in default] == [d.id for d in explicit] == list(reversed(ids))
+        assert (
+            [d.id for d in default.items] == [d.id for d in explicit.items] == list(reversed(ids))
+        )
 
     async def test_oldest_first_reverses_the_default(self, store: PostgresStore) -> None:
         base = datetime(2024, 1, 1, tzinfo=UTC)
@@ -389,7 +391,7 @@ class TestRelevantSorting:
         newest = await store.relevant(sort="recorded_at", order="desc", limit=50)
         oldest = await store.relevant(sort="recorded_at", order="asc", limit=50)
 
-        assert [d.id for d in oldest] == list(reversed([d.id for d in newest]))
+        assert [d.id for d in oldest.items] == list(reversed([d.id for d in newest.items]))
 
     async def test_last_touched_at_ranks_a_supplemented_decision_as_recent(
         self, pg_dsn: str, scratch_schema: str
@@ -416,7 +418,7 @@ class TestRelevantSorting:
             await _seed(raw_store, _decision(recorded_at=old + timedelta(days=1)), [1.0] * DIM)
 
             oldest_by_record = await client.relevant(sort="recorded_at", order="asc", limit=1)
-            target_id = oldest_by_record[0].id
+            target_id = oldest_by_record.items[0].id
             assert target_id == target
 
             newer = await client.record(
@@ -432,7 +434,7 @@ class TestRelevantSorting:
             await client.supplement(newer.decision_id, target_id, actor=HUMAN)
 
             by_touch = await client.relevant(sort="last_touched_at", order="asc", limit=50)
-            assert by_touch[0].id != target_id, "supplementing should stop ranking it stalest"
+            assert by_touch.items[0].id != target_id, "supplementing should stop ranking it stalest"
         finally:
             await raw_store.aclose()
             await client.aclose()

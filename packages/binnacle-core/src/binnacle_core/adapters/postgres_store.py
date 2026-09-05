@@ -46,6 +46,7 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from yoyo import get_backend, read_migrations
 
+from binnacle_core.application.cursors import decode_cursor, encode_cursor
 from binnacle_core.application.ports import DecisionRow, InsertOutcome, StorePort, Tx
 from binnacle_core.domain.errors import (
     ConfigError,
@@ -65,6 +66,7 @@ from binnacle_core.domain.models import (
     Link,
     LinkKind,
     OptionConsidered,
+    Page,
     QueueItem,
     QueueItemView,
     QueueKind,
@@ -812,6 +814,24 @@ class PostgresStore:
         direction = "DESC" if order == "desc" else "ASC"
         return join_sql, expr, f"ORDER BY {expr} {direction}, d.decision_id ASC"
 
+    def _relevant_keyset(self, *, sort: str, order: str, after: str, params: dict[str, Any]) -> str:
+        """The 'resume after this row' condition.
+
+        Written longhand rather than as the compact row comparison
+        `(a, b) < (x, y)`, because that form requires both columns to sort in
+        the same direction and this ordering's tiebreaker deliberately runs
+        opposite to its primary sort.
+        """
+        value, tiebreaker = decode_cursor(after, sort=sort, order=order)
+        expr = _SORT_EXPRESSIONS[sort]
+        params["cursor_value"] = value
+        params["cursor_id"] = tiebreaker
+        comparison = "<" if order == "desc" else ">"
+        return (
+            f"(({expr} {comparison} %(cursor_value)s) "
+            f"OR ({expr} = %(cursor_value)s AND d.decision_id > %(cursor_id)s))"
+        )
+
     @overload
     async def relevant(
         self,
@@ -828,8 +848,9 @@ class PostgresStore:
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: int = 200,
-    ) -> list[CompactDecision]: ...
+    ) -> Page[CompactDecision]: ...
 
     @overload
     async def relevant(
@@ -847,8 +868,9 @@ class PostgresStore:
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: None,
-    ) -> list[Decision]: ...
+    ) -> Page[Decision]: ...
 
     async def relevant(
         self,
@@ -865,8 +887,9 @@ class PostgresStore:
         ] = "recorded_at",
         order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: int | None = 200,
-    ) -> "list[CompactDecision] | list[Decision]":
+    ) -> "Page[CompactDecision] | Page[Decision]":
         schema = self._schema
         where_sql, params = self._relevant_where(
             domains=domains,
@@ -877,46 +900,80 @@ class PostgresStore:
             text=text,
             include_archived=include_archived,
         )
-        params["limit"] = limit
 
         join_sql, _sort_expr, order_sql = self._relevant_order(sort, order)
         if sort == "valid_until":
             where_sql = f"{where_sql} AND d.valid_until IS NOT NULL"
 
+        if after is not None:
+            where_sql = f"{where_sql} AND {
+                self._relevant_keyset(sort=sort, order=order, after=after, params=params)
+            }"
+        params["limit"] = limit + 1  # one extra row tells us whether more remain
+
         if compact_chars is not None:
             params["compact_chars"] = compact_chars
             sql = (
                 f"SELECT d.decision_id, d.domain, d.tier, d.status, "
-                f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
+                f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated, "
+                f"{_sort_expr} AS _sort_value "
                 f"FROM {schema}.decisions d{join_sql} WHERE {where_sql} "
                 f"{order_sql} LIMIT %(limit)s"
             )
             async with self._read_conn() as conn:
                 cur = await conn.execute(sql, params)
                 rows = await cur.fetchall()
+                has_more = len(rows) > limit
+                rows = rows[:limit]
                 subject_refs_by_id = await self._fetch_subject_refs(
                     conn, [r["decision_id"] for r in rows]
                 )
-            return [
-                CompactDecision(
-                    id=r["decision_id"],
-                    domain=r["domain"],
-                    tier=r["tier"],
-                    status=r["status"],
-                    outcome_truncated=r["outcome_truncated"],
-                    subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+            next_cursor = (
+                encode_cursor(
+                    sort=sort,
+                    order=order,
+                    value=rows[-1]["_sort_value"],
+                    tiebreaker=str(rows[-1]["decision_id"]),
                 )
-                for r in rows
-            ]
+                if has_more and rows
+                else None
+            )
+            return Page(
+                items=[
+                    CompactDecision(
+                        id=r["decision_id"],
+                        domain=r["domain"],
+                        tier=r["tier"],
+                        status=r["status"],
+                        outcome_truncated=r["outcome_truncated"],
+                        subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                    )
+                    for r in rows
+                ],
+                next_cursor=next_cursor,
+            )
 
         sql = (
-            f"SELECT d.* FROM {schema}.decisions d{join_sql} WHERE {where_sql} "
-            f"{order_sql} LIMIT %(limit)s"
+            f"SELECT d.*, {_sort_expr} AS _sort_value FROM {schema}.decisions d{join_sql} "
+            f"WHERE {where_sql} {order_sql} LIMIT %(limit)s"
         )
         async with self._read_conn() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
-            return await self._hydrate_decisions(conn, rows)
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            decisions = await self._hydrate_decisions(conn, rows)
+        next_cursor = (
+            encode_cursor(
+                sort=sort,
+                order=order,
+                value=rows[-1]["_sort_value"],
+                tiebreaker=str(rows[-1]["decision_id"]),
+            )
+            if has_more and rows
+            else None
+        )
+        return Page(items=decisions, next_cursor=next_cursor)
 
     async def relevant_count(
         self,
