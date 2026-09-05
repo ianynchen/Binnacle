@@ -55,12 +55,31 @@ class TestRelevantCount:
 
 class TestSummaries:
     async def test_queue_summary_counts_open_items_by_kind(self, bn: Binnacle) -> None:
+        """Two distinct kinds must show up as two distinct keys with their
+        own counts -- a single-kind seed (as this test used to do) can't
+        catch a `GROUP BY kind` that never actually groups."""
         d = await bn.record(_nd(), actor=AGENT)
         await bn.recommend(d.decision_id, actor=AGENT, reason="looks solid")
+
+        # A declared `supplements` target that is long-term files a pending
+        # `kind='link'` queue item instead of linking inline (FR-1.4) -- a
+        # second, distinct kind produced through the real client surface
+        # rather than poking the queue table directly.
+        target = await bn.record_long_term(
+            _nd(scenario="long-term retry budget policy"), actor=HUMAN
+        )
+        await bn.record(
+            _nd(
+                scenario="follow-up note on retry budget",
+                supplements=[target.decision_id],
+            ),
+            actor=AGENT,
+        )
 
         summary = await bn.queue_summary()
         open_items = await bn.queue(limit=1000)
         assert sum(summary.values()) == len(open_items.items)
+        assert summary == {"promote": 1, "link": 1}
 
     async def test_queue_summary_ignores_resolved_items(self, bn: Binnacle) -> None:
         """A summary that counted resolved items would misreport the review
@@ -74,6 +93,46 @@ class TestSummaries:
         await bn.dismiss_item(item.item.item_id, actor=HUMAN, reason="noise")
         after = await bn.queue_summary()
         assert sum(after.values()) == sum(before.values()) - 1
+
+    async def test_queue_summary_filters_by_domain(self, bn: Binnacle) -> None:
+        """The `queue` table has no `domain` column -- reaching a queue
+        item's domain means joining to `decisions` on `decision_id`. A wrong
+        join key, a filter against the wrong table, or a `domains` argument
+        silently ignored would all produce the SAME (unfiltered) totals as
+        this test's `unfiltered` summary, so the per-domain assertions below
+        must differ from it to have any teeth."""
+        arch = await bn.record(_nd(), actor=AGENT)
+        await bn.recommend(arch.decision_id, actor=AGENT, reason="looks solid")
+
+        # A second kind ('link'), still in "architecture", so the domain
+        # filter has to preserve a per-kind breakdown, not just a total.
+        target = await bn.record_long_term(
+            _nd(scenario="long-term retry budget policy"), actor=HUMAN
+        )
+        await bn.record(
+            _nd(
+                scenario="follow-up note on retry budget",
+                supplements=[target.decision_id],
+            ),
+            actor=AGENT,
+        )
+
+        product = await bn.record(
+            _nd(domain="product", scenario="pricing tier rollout"), actor=AGENT
+        )
+        await bn.recommend(product.decision_id, actor=AGENT, reason="looks solid")
+
+        unfiltered = await bn.queue_summary()
+        assert unfiltered == {"promote": 2, "link": 1}
+
+        arch_only = await bn.queue_summary(domains=["architecture"])
+        assert arch_only == {"promote": 1, "link": 1}
+
+        product_only = await bn.queue_summary(domains=["product"])
+        assert product_only == {"promote": 1}
+
+        both = await bn.queue_summary(domains=["architecture", "product"])
+        assert both == unfiltered
 
     async def test_domain_summary_includes_domains_with_no_decisions(self, bn: Binnacle) -> None:
         """The registry-housekeeping use case is looking for exactly these
