@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 from binnacle_core import Actor, Binnacle, Decision, NewDecision, Page, QueueItemView
 
@@ -33,29 +33,21 @@ class ReasonRequest(BaseModel):
 
 
 class ResolveConflictRequest(BaseModel):
-    """`resolve_conflict` takes exactly one of `winner_id`, `refined`, or
-    `reason` -- three mutually exclusive ways to resolve a `conflict` queue
-    item (see `LifecycleEngine.resolve_conflict`'s docstring). Core already
-    enforces this as a domain rule (`InvalidResolution`, mapped to 409), but
-    which-one-did-you-mean is a *request-shape* question, not a rule about
-    decisions -- the same kind of concern `decisions.py`'s `_paired` helper
-    resolves for half-supplied query pairs. Rejecting an ambiguous or empty
-    body here, before any call reaches the client, means the 422 names the
-    field-level problem directly rather than a client-side error surfacing
-    two mutually exclusive resolutions were both attempted.
+    """`resolve_conflict`'s three fields, passed through as given -- which
+    combinations are legal is a domain rule that belongs to
+    `LifecycleEngine.resolve_conflict` alone (see its docstring), not
+    something this transport layer may second-guess. In particular, core
+    accepts `winner_id` together with `reason` (the reason becomes the
+    discard reason when a long-term winner discards a short-term loser); a
+    request-shape validator here that treated `reason` as exclusive with
+    `winner_id` would make that legitimate call impossible over REST. Core
+    raises `InvalidResolution` for the shapes it does reject, which
+    `errors.py` maps to 409.
     """
 
     winner_id: UUID | None = None
     refined: NewDecision | None = None
     reason: str | None = None
-
-    @model_validator(mode="after")
-    def _exactly_one_resolution(self) -> "ResolveConflictRequest":
-        supplied = sum(v is not None for v in (self.winner_id, self.refined, self.reason))
-        if supplied != 1:
-            msg = "exactly one of winner_id, refined, or reason is required"
-            raise ValueError(msg)
-        return self
 
 
 def queue_router(binnacle: Binnacle, get_actor: Callable[..., Awaitable[Actor]]) -> APIRouter:

@@ -17,7 +17,15 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from binnacle_core import Actor, Decision, NewDecision, Page, QueueItem, QueueItemView
+from binnacle_core import (
+    Actor,
+    Decision,
+    InvalidResolution,
+    NewDecision,
+    Page,
+    QueueItem,
+    QueueItemView,
+)
 
 NEW_DECISION = {
     "domain": "architecture",
@@ -90,6 +98,11 @@ def test_a_nonempty_page_of_queue_items_serializes_faithfully(
     row = body["items"][0]
     assert row["domain"] == "architecture"
     assert row["decision_confidence"] == 0.91
+    # Pydantic v2 (which FastAPI uses to serialize the `response_model`)
+    # renders `timedelta` as an ISO 8601 duration string, not total seconds
+    # -- pin the actual wire value a client consumes (verified by running
+    # this test, not assumed).
+    assert row["age"] == "P3D"
     assert row["item"]["item_id"] == 42
     assert row["item"]["kind"] == "promote"
     assert row["item"]["decision_id"] == str(item.decision_id)
@@ -166,29 +179,54 @@ def test_dismiss_passes_the_reason_and_resolved_actor(
     assert client.dismiss_item.await_args.kwargs["actor"] == human_actor
 
 
-def test_resolve_conflict_accepts_exactly_one_resolution(
+def test_resolve_conflict_accepts_winner_id_alone(http: TestClient, client: AsyncMock) -> None:
+    client.resolve_conflict.return_value = None
+    response = http.post("/binnacle/v1/queue/1:resolve_conflict", json={"winner_id": str(uuid4())})
+    assert response.status_code == 200
+
+
+def test_resolve_conflict_forwards_winner_id_and_reason_together(
     http: TestClient, client: AsyncMock
 ) -> None:
-    """The three paths are mutually exclusive by design (FR-5.4). Passing two
-    is ambiguous, and guessing which the caller meant could supersede the
-    wrong decision."""
+    """Core supports a long-term winner discarding a short-term loser with
+    `winner_id` + `reason` together (`reason` becomes the discard reason --
+    see `LifecycleEngine.resolve_conflict`, and
+    `test_lt_winner_discards_st_loser` in binnacle-core's own suite). The
+    router must not stand between the client and this legitimate shape by
+    guessing at a request-shape rule core doesn't itself enforce -- both
+    values must reach the client verbatim."""
     client.resolve_conflict.return_value = None
-
-    assert (
-        http.post(
-            "/binnacle/v1/queue/1:resolve_conflict", json={"winner_id": str(uuid4())}
-        ).status_code
-        == 200
-    )
-
-    both = http.post(
+    winner_id = uuid4()
+    response = http.post(
         "/binnacle/v1/queue/1:resolve_conflict",
-        json={"winner_id": str(uuid4()), "reason": "also accepting"},
+        json={"winner_id": str(winner_id), "reason": "lt policy wins"},
     )
-    assert both.status_code == 422
+    assert response.status_code == 200
+    kwargs = client.resolve_conflict.await_args.kwargs
+    assert kwargs["winner_id"] == winner_id
+    assert kwargs["reason"] == "lt policy wins"
 
-    neither = http.post("/binnacle/v1/queue/1:resolve_conflict", json={})
-    assert neither.status_code == 422
+
+def test_resolve_conflict_rejection_from_core_surfaces_as_409(
+    http: TestClient, client: AsyncMock
+) -> None:
+    """Shapes core itself rejects (e.g. `winner_id` and `refined` together,
+    or all three absent) are core's call to make, not the router's -- they
+    surface as `InvalidResolution` mapped to a 409 problem document, single-
+    sourced from core rather than duplicated as a router-level 422."""
+    client.resolve_conflict.side_effect = InvalidResolution(
+        "resolve_conflict accepts at most one of winner_id or refined"
+    )
+    response = http.post(
+        "/binnacle/v1/queue/1:resolve_conflict",
+        json={"winner_id": str(uuid4()), "refined": NEW_DECISION},
+    )
+    assert response.status_code == 409
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["status"] == 409
+    assert body["title"] == "InvalidResolution"
+    assert body["type"].endswith("invalid_resolution")
 
 
 def test_resolve_conflict_accepts_refined_alone(http: TestClient, client: AsyncMock) -> None:
@@ -209,15 +247,6 @@ def test_resolve_conflict_accepts_reason_alone(http: TestClient, client: AsyncMo
     assert kwargs["reason"] == "accepted as-is"
     assert kwargs["winner_id"] is None
     assert kwargs["refined"] is None
-
-
-def test_resolve_conflict_all_three_is_also_rejected(http: TestClient, client: AsyncMock) -> None:
-    response = http.post(
-        "/binnacle/v1/queue/1:resolve_conflict",
-        json={"winner_id": str(uuid4()), "refined": NEW_DECISION, "reason": "x"},
-    )
-    assert response.status_code == 422
-    client.resolve_conflict.assert_not_awaited()
 
 
 def test_resolve_conflict_passes_the_resolved_actor(
