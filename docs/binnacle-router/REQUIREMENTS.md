@@ -194,9 +194,14 @@ means the read (or, for sweeps, the write) is unattributed.
 - **FR-4.5** Paired query parameters that only make sense together
   (`subject_kind`/`subject_identifier`, `evidence_kind`/`evidence_identifier`,
   `actor_kind`/`actor_id`) are validated by the shared `params.paired()`
-  helper: supplying exactly one half raises (422 via the `ValueError`
-  handler, FR-5.3) rather than silently widening the query by dropping the
-  incomplete filter.
+  helper: supplying exactly one half raises (422 via `BinnacleAPIRoute`,
+  FR-5.5) rather than silently widening the query by dropping the
+  incomplete filter. The two halves are **not** named to one pattern across
+  the surface — `decisions.py` uses `…_identifier`, `/changes` uses
+  `actor_id` — so `paired()` takes both parameter names from its caller and
+  the 422's `detail` quotes them verbatim. A message naming a parameter the
+  endpoint does not declare is unactionable: unknown query parameters are
+  ignored, so a client that obeyed it would get the identical 422 forever.
 
 ### FR-5 Error mapping (RFC 7807)
 
@@ -237,6 +242,26 @@ means the read (or, for sweeps, the write) is unattributed.
   FastAPI version's default `__str__` appends the server-side endpoint's
   file path and line number, which a public error body must not leak
   (GUIDELINES §9).
+- **FR-5.5** The `ValueError`/`TypeError` → 422 mapping is scoped to this
+  package's own routes by a custom `fastapi.routing.APIRoute` subclass
+  (`BinnacleAPIRoute`), which every sub-router passes as its `route_class`;
+  it is **not** an app-global exception handler. Those two are builtins, and
+  Starlette dispatches exception handlers by MRO across every route in the
+  host's app — registered app-globally the mapping converted the host's own
+  failures (a host `TypeError`, a `pydantic.ValidationError` or a
+  `json.JSONDecodeError`, both `ValueError` subclasses) into 422s carrying
+  the exception text, leaking host internals and hiding the host's 5xx from
+  its own alerting. **Mounting this package must not change how the host's
+  own endpoints fail.** Only classes a host route does not raise —
+  `binnacle-core`'s own errors and FastAPI's `RequestValidationError` — stay
+  in `install_error_handlers`.
+- **FR-5.6** The published OpenAPI declares the 422 of every operation as
+  `application/problem+json` carrying the `ProblemDocument` schema, the body
+  FR-5.2 defines. FastAPI's stock declaration (`application/json` carrying
+  `HTTPValidationError`, whose `detail` is an *array*) describes a body this
+  package never sends, and a client generated from it breaks on the first
+  validation error it sees. Declaring the full per-operation
+  400/403/404/409/500 catalog is out of scope (§5).
 
 ### FR-6 Actor attestation
 
@@ -326,6 +351,12 @@ means the read (or, for sweeps, the write) is unattributed.
   mutating schema is a security surface with no legitimate client use
   case, so this package defines no route for it. See the package README's
   mounting recipe for the same statement in host-facing terms.
+- **The full per-operation response catalog in OpenAPI.** FR-5.6 corrects
+  the 422 declaration package-wide; declaring which of 400/403/404/409/500
+  each individual operation can return is a large, mechanical change with
+  its own review surface and is deferred. Until it lands, the published
+  document describes the 422 accurately and is silent about the rest — the
+  error-to-status table in FR-5.1 remains the contract for those.
 - **Authentication and authorization.** Entirely the host's concern
   (`docs/binnacle-core/REQUIREMENTS.md` §5) — this package has no login
   flow, no session model, and no per-domain ACL of its own; it only

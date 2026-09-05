@@ -23,6 +23,7 @@ from binnacle_core import (
     Page,
     Tier,
 )
+from binnacle_router.errors import BinnacleAPIRoute
 from binnacle_router.params import paired
 
 SortKey = Literal["decided_at", "recorded_at", "last_touched_at", "valid_until"]
@@ -77,14 +78,24 @@ class BatchGetRequest(BaseModel):
 
 
 def decision_read_router(binnacle: Binnacle) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(route_class=BinnacleAPIRoute)
 
     @router.get("/decisions")
     async def list_decisions(
         filters: Annotated[DecisionsQuery, Query()],
     ) -> Page[CompactDecision] | Page[Decision]:
-        subject = paired(filters.subject_kind, filters.subject_identifier, name="subject")
-        evidence = paired(filters.evidence_kind, filters.evidence_identifier, name="evidence")
+        subject = paired(
+            filters.subject_kind,
+            filters.subject_identifier,
+            kind_param="subject_kind",
+            identifier_param="subject_identifier",
+        )
+        evidence = paired(
+            filters.evidence_kind,
+            filters.evidence_identifier,
+            kind_param="evidence_kind",
+            identifier_param="evidence_identifier",
+        )
         # Branching on a literal per call (rather than passing `filters.projection`
         # straight through) mirrors `Binnacle.relevant()`'s own docstring: with this
         # many `Optional` parameters, a call site carrying a union-typed `projection`
@@ -126,8 +137,18 @@ def decision_read_router(binnacle: Binnacle) -> APIRouter:
 
     @router.get("/decisions/count")
     async def count_decisions(filters: Annotated[CountQuery, Query()]) -> dict[str, int]:
-        subject = paired(filters.subject_kind, filters.subject_identifier, name="subject")
-        evidence = paired(filters.evidence_kind, filters.evidence_identifier, name="evidence")
+        subject = paired(
+            filters.subject_kind,
+            filters.subject_identifier,
+            kind_param="subject_kind",
+            identifier_param="subject_identifier",
+        )
+        evidence = paired(
+            filters.evidence_kind,
+            filters.evidence_identifier,
+            kind_param="evidence_kind",
+            identifier_param="evidence_identifier",
+        )
         count = await binnacle.relevant_count(
             domains=filters.domains,
             subject=subject,
@@ -191,7 +212,7 @@ class ReasonRequest(BaseModel):
 def decision_write_router(
     binnacle: Binnacle, get_actor: Callable[..., Awaitable[Actor]]
 ) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(route_class=BinnacleAPIRoute)
 
     @router.post("/decisions")
     async def record_decision(

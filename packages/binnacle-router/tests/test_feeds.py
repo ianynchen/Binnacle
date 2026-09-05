@@ -110,9 +110,15 @@ def test_changes_actor_filter_is_paired_into_an_actor(http: TestClient, client: 
 
 def test_half_an_actor_pair_is_rejected(http: TestClient, client: AsyncMock) -> None:
     """Half a pair would otherwise be silently dropped, widening the filter
-    to "any actor" instead of failing loudly."""
+    to "any actor" instead of failing loudly.
+
+    The message must name `actor_id` -- the parameter this endpoint actually
+    declares (REQUIREMENTS FR-4.5). Naming a parameter that does not exist
+    makes the 422 unactionable: a client that obeys it gets the identical 422
+    forever, since unknown query parameters are ignored."""
     response = http.get("/binnacle/v1/changes", params={"actor_id": "alice"})
     assert response.status_code == 422
+    assert response.json()["detail"] == "actor_kind and actor_id must be supplied together"
     client.changes.assert_not_awaited()
 
 

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from binnacle_core import Actor, Binnacle, DomainRecord, DomainSummary
+from binnacle_router.errors import BinnacleAPIRoute
 
 
 class NewDomainRequest(BaseModel):
@@ -41,7 +42,7 @@ class QueueSummaryQuery(BaseModel):
 
 
 def registry_router(binnacle: Binnacle, get_actor: Callable[..., Awaitable[Actor]]) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(route_class=BinnacleAPIRoute)
 
     @router.get("/domains")
     async def list_domains() -> list[DomainRecord]:

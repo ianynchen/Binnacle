@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import APIRouter
 
 from binnacle_core import Actor, Binnacle
+from binnacle_router.errors import PROBLEM_RESPONSES
 from binnacle_router.routes.decisions import decision_read_router, decision_write_router
 from binnacle_router.routes.feeds import feeds_router
 from binnacle_router.routes.queue import queue_router
@@ -29,7 +30,12 @@ could then self-declare `human` and walk through the promotion gate.
 
 
 def make_router(*, binnacle: Binnacle, get_actor: ActorResolver) -> APIRouter:
-    router = APIRouter(prefix="/binnacle/v1")
+    # `responses` is set here rather than on each sub-router because FastAPI
+    # *does* propagate it through `include_router` -- unlike `route_class`,
+    # which each sub-router has to set for itself (see `BinnacleAPIRoute`).
+    # Without it FastAPI publishes its stock 422 declaration, which names a
+    # media type and a `detail` shape this package never sends.
+    router = APIRouter(prefix="/binnacle/v1", responses=PROBLEM_RESPONSES)
 
     router.include_router(decision_read_router(binnacle))
     router.include_router(decision_write_router(binnacle, get_actor))

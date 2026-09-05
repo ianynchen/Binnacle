@@ -43,6 +43,13 @@ it leaves every typed `binnacle-core` error surfacing as an unmapped,
 unhelpful 500 instead of the RFC 7807 body this package exists to produce
 — see [Error responses](#error-responses).
 
+**Mounting binnacle does not change how your own endpoints fail.** The only
+classes `install_error_handlers` registers app-wide are `binnacle-core`'s
+own exception types and FastAPI's `RequestValidationError` — nothing your
+routes raise. Your `ValueError`s, `TypeError`s, `pydantic.ValidationError`s
+and `json.JSONDecodeError`s reach your own handlers and your own 5xx exactly
+as they would without binnacle mounted.
+
 **The actor must come from the host's own verified authentication —
 never from a client-supplied header, query parameter, or body field.**
 `resolve_actor` above is only ever called after `verify_my_session` (or
@@ -102,7 +109,19 @@ The full error-to-status table lives in
 [`../../docs/binnacle-router/REQUIREMENTS.md` FR-5](../../docs/binnacle-router/REQUIREMENTS.md).
 FastAPI's own `RequestValidationError` (malformed query parameters, a body
 that fails pydantic validation) is mapped the same way, with per-field
-detail carried in an `errors` array.
+detail carried in an `errors` array. `detail` is always a **string**; the
+per-field errors live in `errors`, never in `detail`. The published OpenAPI
+declares exactly this for every operation's 422 —
+`application/problem+json` carrying a `ProblemDocument` schema — rather than
+FastAPI's stock `HTTPValidationError`, whose array-valued `detail` this
+package never sends. Other error statuses are not yet declared per
+operation; FR-5's table is the contract for those.
+
+**`ValueError`/`TypeError` → 422 applies only to binnacle's own routes.**
+That mapping is carried by a `route_class` on this package's routers, not by
+an app-global exception handler, because Starlette dispatches handlers by
+MRO across every route in your app — registered app-wide it would convert
+your endpoints' bugs into 422s carrying the exception text.
 
 **There is no catch-all for unmapped `binnacle-core` errors.** A core
 error this package's `STATUS_BY_ERROR` does not name propagates and

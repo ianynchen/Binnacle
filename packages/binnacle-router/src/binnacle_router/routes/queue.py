@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from binnacle_core import Actor, Binnacle, Decision, NewDecision, Page, QueueItemView
+from binnacle_router.errors import BinnacleAPIRoute
 
 QueueOrder = Literal["oldest", "shakiest", "domain"]
 
@@ -51,7 +52,7 @@ class ResolveConflictRequest(BaseModel):
 
 
 def queue_router(binnacle: Binnacle, get_actor: Callable[..., Awaitable[Actor]]) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(route_class=BinnacleAPIRoute)
 
     @router.get("/queue")
     async def list_queue(filters: Annotated[QueueQuery, Query()]) -> Page[QueueItemView]:

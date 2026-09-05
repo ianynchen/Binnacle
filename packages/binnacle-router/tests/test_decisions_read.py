@@ -119,9 +119,15 @@ def test_projection_full_returns_untruncated_decisions(http: TestClient, client:
 
 def test_half_a_subject_pair_is_rejected(http: TestClient, client: AsyncMock) -> None:
     """A subject is a (kind, identifier) pair; half of one is meaningless and
-    would otherwise be silently dropped, returning a wider result set than asked for."""
+    would otherwise be silently dropped, returning a wider result set than asked for.
+
+    The message must name the parameters this endpoint actually declares, so a
+    client can act on it (REQUIREMENTS FR-4.5)."""
     response = http.get("/binnacle/v1/decisions", params={"subject_kind": "component"})
     assert response.status_code == 422
+    assert (
+        response.json()["detail"] == "subject_kind and subject_identifier must be supplied together"
+    )
     client.relevant.assert_not_awaited()
 
 

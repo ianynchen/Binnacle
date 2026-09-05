@@ -14,7 +14,7 @@ Host process (Meridian, a standalone binnacle deployment, ...)
 ┌──────────────────────── binnacle-router (library) ────────────────────────┐
 │  make_router(binnacle, get_actor) -> APIRouter   install_error_handlers()  │
 │  routes/: decisions.py  queue.py  registry.py  feeds.py  sweeps.py         │
-│  errors.py: STATUS_BY_ERROR, RFC 7807 problem documents                   │
+│  errors.py: STATUS_BY_ERROR, BinnacleAPIRoute, RFC 7807 problem documents │
 │  params.py: paired() query-parameter helper                               │
 └──────────────────────────────┬─────────────────────────────────────────────┘
                                 │ binnacle_core's public surface only
@@ -68,7 +68,7 @@ Host process (Meridian, a standalone binnacle deployment, ...)
 
 ```python
 def make_router(*, binnacle: Binnacle, get_actor: ActorResolver) -> APIRouter:
-    router = APIRouter(prefix="/binnacle/v1")
+    router = APIRouter(prefix="/binnacle/v1", responses=PROBLEM_RESPONSES)
     router.include_router(decision_read_router(binnacle))
     router.include_router(decision_write_router(binnacle, get_actor))
     router.include_router(queue_router(binnacle, get_actor))
@@ -149,6 +149,38 @@ wiring GUIDELINES calls out as painful to rediscover later — hence the
 README's mounting recipe includes it as a required, explicitly commented
 step, not an optional extra.
 
+**Blast radius decides which of the two mechanisms carries a mapping.**
+Starlette dispatches exception handlers by MRO across **every route in the
+host's app**, so an app-global handler is only safe for a class a host
+route will never raise. That splits the error layer in two:
+
+| Mechanism | Carries | Reaches |
+|---|---|---|
+| `install_error_handlers(app)` | `STATUS_BY_ERROR`'s `binnacle_core` classes, `RequestValidationError` | the whole app — harmlessly, since no host route raises these |
+| `BinnacleAPIRoute` (`route_class`) | `ValueError`/`TypeError` → 422 (FR-5.5) | only routes this package publishes |
+
+`ValueError` and `TypeError` are builtins the host's own code raises
+constantly, so the FR-5.2 mapping for them lives in a
+`fastapi.routing.APIRoute` subclass whose route handler wraps the call and
+converts exactly those two into the same `_problem()` response. Before this
+split, mounting binnacle silently changed how the *host's* unrelated
+endpoints failed: a host `TypeError`, a `pydantic.ValidationError` or a
+`json.JSONDecodeError` (both `ValueError` subclasses) came back as
+`422 application/problem+json` with the exception text in `detail` —
+leaking host internals, telling the client its request was at fault, and
+removing the 5xx the host's alerting watches for. **binnacle does not
+intercept the host's own exceptions.**
+
+**`route_class` does not propagate through `include_router`** (verified
+against fastapi 0.141, not assumed): an included router's routes are the
+route objects that router already built with its own `route_class`, and
+`include_router` carries prefix/tags/dependencies/`responses` forward but
+not the class. So every one of the six sub-routers passes
+`route_class=BinnacleAPIRoute` itself; setting it only on the router
+`make_router` returns would protect nothing.
+`test_argument_misuse_is_422_on_every_sub_router` exercises one route per
+sub-router so a new sub-router that forgets it fails the suite.
+
 **RFC 7807 shape** (`_problem()`): every mapped error, `ValueError`/`TypeError`
 misuse, and `RequestValidationError` renders as
 `{"type": "https://binnacle.dev/problems/<snake_case>", "title":
@@ -157,6 +189,21 @@ misuse, and `RequestValidationError` renders as
 failures. One `_problem()` helper is the single place this shape is
 constructed, so every error path stays byte-for-byte consistent without
 each handler re-deriving it.
+
+**The published 422 declares that shape** (FR-5.6). `make_router` sets
+`responses=PROBLEM_RESPONSES` on the router it returns — `responses`
+*does* propagate through `include_router`, unlike `route_class` — which
+replaces FastAPI's stock `application/json` + `HTTPValidationError`
+declaration (an array-valued `detail` this package never sends) with
+`application/problem+json` + the `ProblemDocument` model. The schema is
+**inlined** rather than referenced as
+`#/components/schemas/ProblemDocument`: FastAPI registers a component only
+for a `responses` entry naming a `model`, and it then also declares that
+model under the route's response-class media type (`application/json`),
+which would re-introduce a media type this package never sends. Inlining
+costs roughly 20 KB across the ~30 operations and is the only shape that
+publishes the real media type alone; revisit if FastAPI gains a way to
+register a response component independently of that media type.
 
 ## 5. Import Contract
 
@@ -208,7 +255,8 @@ at some future scale) rather than being spent on now.
 ```
 packages/binnacle-router/src/binnacle_router/
   router.py           make_router(), ActorResolver
-  errors.py            STATUS_BY_ERROR, install_error_handlers()
+  errors.py            STATUS_BY_ERROR, install_error_handlers(),
+                       BinnacleAPIRoute, ProblemDocument/PROBLEM_RESPONSES
   params.py            paired() -- shared query-parameter helper
   routes/
     decisions.py        decision_read_router(), decision_write_router()
@@ -242,6 +290,15 @@ packages/binnacle-router/src/binnacle_router/
   not a stylistic choice.
 - **DR-3 No catch-all `BinnacleError` handler** (§4): an unmapped core
   error is an honest 500, never a guessed 4xx.
+- **DR-8 `ValueError`/`TypeError` → 422 is a `route_class`, not an app
+  handler** (§4). Rejected: dropping the mapping (FR-5.2 mandates it) and
+  keeping it app-global (it changed how the host's own routes fail).
+  Rejected: setting `route_class` once on the router `make_router` returns
+  — FastAPI does not propagate it through `include_router`.
+- **DR-9 The 422's OpenAPI schema is inlined, not a `$ref`** (§4), because
+  FastAPI ties component registration for a response to the route's
+  response-class media type. Accepted cost: ~20 KB of duplication in the
+  published document.
 - **DR-4 Response models are `binnacle-core`'s own dataclasses/generics**,
   never a parallel DTO layer (REQUIREMENTS FR-4.1) — verified, not
   assumed, that FastAPI's pydantic-based serialization renders frozen

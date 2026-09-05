@@ -13,6 +13,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from binnacle_core import ArchivalSummary, BackfillSummary, Binnacle, DiscoverySummary
+from binnacle_router.errors import BinnacleAPIRoute
 
 
 class BatchRequest(BaseModel):
@@ -24,7 +25,7 @@ class BatchRequest(BaseModel):
 
 
 def sweeps_router(binnacle: Binnacle) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(route_class=BinnacleAPIRoute)
 
     @router.post("/sweeps:backfill_embeddings")
     async def backfill_embeddings_sweep(body: BatchRequest) -> BackfillSummary:
