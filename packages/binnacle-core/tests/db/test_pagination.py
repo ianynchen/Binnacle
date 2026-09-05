@@ -9,6 +9,8 @@ tested here rather than only in the unit codec tests.
 """
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
@@ -92,3 +94,54 @@ class TestRelevantPagination:
         assert page.next_cursor is not None
         with pytest.raises(InvalidCursor):
             await bn.relevant(sort="decided_at", order="desc", after=page.next_cursor)
+
+    async def test_ascending_paging_returns_genuinely_ascending_order(self, bn: Binnacle) -> None:
+        """Every other test in this module pages in the default `order="desc"`.
+        `_relevant_keyset` picks its comparison operator with
+        `"<" if order == "desc" else ">"` -- a flipped operator on the
+        ascending branch would still return each decision exactly once (just
+        on the wrong page), so uniqueness alone can't catch it. Seed decisions
+        with known, strictly increasing `decided_at` values and assert the
+        concatenated page order matches that sequence exactly."""
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        ids: list[UUID] = []
+        for i in range(11):
+            decision = await bn.record(
+                _nd(scenario=f"decision {i}", decided_at=base + timedelta(days=i)), actor=AGENT
+            )
+            ids.append(decision.decision_id)
+
+        seen: list[UUID] = []
+        cursor: str | None = None
+        for _ in range(50):  # generous bound; asserts termination too
+            page = await bn.relevant(sort="decided_at", order="asc", limit=3, after=cursor)
+            seen.extend(d.id for d in page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert cursor is None, "pagination did not terminate"
+        assert len(seen) == len(set(seen)), "a decision appeared on two pages"
+        assert seen == ids, "pages were not in genuinely ascending decided_at order"
+
+    async def test_last_touched_at_paging_with_full_projection(self, bn: Binnacle) -> None:
+        """`last_touched_at` is the one sort key whose value comes from a
+        `LEFT JOIN LATERAL` over `transitions` rather than a stored column,
+        and `projection="full"` is the `SELECT d.*, {expr} AS _sort_value`
+        path -- neither is exercised by any other pagination test. Page
+        through both together and check the same once-each/terminates
+        properties the other tests check."""
+        for i in range(11):
+            await bn.record(_nd(scenario=f"decision {i}"), actor=AGENT)
+
+        seen: list[UUID] = []
+        cursor: str | None = None
+        for _ in range(50):  # generous bound; asserts termination too
+            page = await bn.relevant(
+                projection="full", sort="last_touched_at", limit=3, after=cursor
+            )
+            seen.extend(d.decision_id for d in page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert cursor is None, "pagination did not terminate"
+        assert len(seen) == len(set(seen)), "a decision appeared on two pages"
