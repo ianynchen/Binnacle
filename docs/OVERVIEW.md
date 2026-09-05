@@ -55,11 +55,14 @@ Two workspace managers, one repository, each blind to the other:
 
 ## 4. Cross-package dependencies
 
-`binnacle-router` will eventually depend on `binnacle-core`. Which part of
-`binnacle-core`'s surface it may depend on (its public application-layer
-client vs. reaching into internals) is `binnacle-router`'s own future
-spec's responsibility to define and enforce via an import-linter contract
-— not decided here, and not decided implicitly by omission either.
+`binnacle-router` depends on `binnacle-core`'s public surface only — the
+top-level `binnacle_core` package (its `__init__.py` re-exports), never
+`binnacle_core.application`, `.domain`, or `.adapters` directly. This is
+enforced, not merely documented: `binnacle-router`'s own
+`[tool.importlinter]` contract in `packages/binnacle-router/pyproject.toml`
+forbids those three submodules as source modules of `binnacle_router`. See
+`docs/binnacle-router/ARCHITECTURE.md` §5 for the contract itself and the
+rationale for `allow_indirect_imports`.
 
 ## 5. Quality gates
 

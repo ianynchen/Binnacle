@@ -179,6 +179,14 @@ Two gaps are carried deliberately rather than silently omitted:
   mounting this router must not expose the sweep endpoints on a publicly
   reachable path** — restrict them to an internal scheduler or an
   operator-only network boundary.
+- **`limit` is unbounded on every paginated endpoint.** `GET /decisions`,
+  `GET /queue`, `GET /changes`, and `GET /precedent` all accept `limit` as
+  a plain `int` with no upper (or lower) bound — `limit=999999999` and
+  `limit=-5` both pass straight through to `binnacle-core`, which validates
+  neither. Whether to cap it is an API-policy decision for the host to
+  make, not one this package has made on the host's behalf; a host that
+  cares should validate or clamp `limit` itself before proxying a client's
+  value through.
 
 ## Development
 
@@ -194,6 +202,6 @@ here.
 uv run pytest -c packages/binnacle-router/pyproject.toml packages/binnacle-router/tests
 ```
 
-Tests run entirely against an `AsyncMock(spec=Binnacle)` — no live
-database is needed to exercise this package's own routing, error-mapping,
-and serialization behavior.
+Tests run entirely against a `create_autospec(Binnacle, spec_set=True,
+instance=True)` — no live database is needed to exercise this package's
+own routing, error-mapping, and serialization behavior.

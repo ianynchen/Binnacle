@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from binnacle_core import Actor, Decision
+from binnacle_core import Actor, Decision, NewDecision
 
 NEW_DECISION = {
     "domain": "architecture",
@@ -72,6 +72,18 @@ def test_record_serializes_the_returned_decision(
     assert body["tier"] == "short_term"
 
 
+def test_record_forwards_the_posted_decision_body(
+    http: TestClient, client: AsyncMock, human_actor: Actor
+) -> None:
+    """The `NewDecision` the client receives must be the one the request
+    actually carried, not merely *some* `NewDecision` -- a swapped-in
+    placeholder (e.g. `record(None, ...)`) would otherwise pass every other
+    assertion here."""
+    client.record.return_value = _decision(human_actor)
+    http.post("/binnacle/v1/decisions", json=NEW_DECISION)
+    assert client.record.await_args.args[0] == NewDecision(**NEW_DECISION)
+
+
 def test_record_long_term_reaches_record_long_term_not_record(
     http: TestClient, client: AsyncMock, human_actor: Actor
 ) -> None:
@@ -80,6 +92,7 @@ def test_record_long_term_reaches_record_long_term_not_record(
     client.record_long_term.assert_awaited_once()
     client.record.assert_not_awaited()
     assert client.record_long_term.await_args.kwargs["actor"] == human_actor
+    assert client.record_long_term.await_args.args[0] == NewDecision(**NEW_DECISION)
 
 
 def test_promote_refined_passes_source_ids_and_the_resolved_actor(
@@ -93,6 +106,7 @@ def test_promote_refined_passes_source_ids_and_the_resolved_actor(
     )
     kwargs = client.promote_refined.await_args.kwargs
     assert client.promote_refined.await_args.args[0] == source_ids
+    assert client.promote_refined.await_args.args[1] == NewDecision(**NEW_DECISION)
     assert kwargs["actor"] == human_actor
 
 
@@ -116,14 +130,21 @@ def test_relationship_direction_is_path_id_supersedes_target(
 def test_supplements_routes_to_supplement_not_supersede(
     http: TestClient, client: AsyncMock, human_actor: Actor
 ) -> None:
+    """Path id is the `from` side, target_id the `to` side -- matching
+    supplement(new_id, old_id) -- exactly like the `SUPERSEDES` sibling
+    above. Without pinning the ids here, a reversed call
+    (`supplement(target_id, decision_id, ...)`) is data corruption that this
+    test would not catch."""
     new_id, old_id = uuid4(), uuid4()
     client.supplement.return_value = None
-    http.post(
+    response = http.post(
         f"/binnacle/v1/decisions/{new_id}/relationships",
         json={"kind": "SUPPLEMENTS", "target_id": str(old_id)},
     )
+    assert response.status_code == 200
     client.supplement.assert_awaited_once()
     client.supersede.assert_not_awaited()
+    assert client.supplement.await_args.args[:2] == (new_id, old_id)
     assert client.supplement.await_args.kwargs["actor"] == human_actor
 
 

@@ -90,6 +90,78 @@ def test_filters_and_sort_reach_the_client_unchanged(http: TestClient, client: A
     assert kwargs["subject"] == ("component", "portolan-ingest")
 
 
+def test_evidence_text_expiring_before_and_include_archived_reach_the_client(
+    http: TestClient, client: AsyncMock
+) -> None:
+    """The `subject`/`sort`/`limit` filters above are not the only ones
+    `_FilterFields` declares -- `evidence`, `text`, `expiring_before`, and
+    `include_archived` reach `relevant()` too, each with its own value, not
+    merely a truthy default."""
+    client.relevant.return_value = _page()
+    http.get(
+        "/binnacle/v1/decisions",
+        params={
+            "evidence_kind": "commit",
+            "evidence_identifier": "abc123",
+            "text": "retry policy",
+            "expiring_before": "2027-01-01T00:00:00Z",
+            "include_archived": True,
+        },
+    )
+    kwargs = client.relevant.await_args.kwargs
+    assert kwargs["evidence"] == ("commit", "abc123")
+    assert kwargs["text"] == "retry policy"
+    assert kwargs["expiring_before"] == datetime(2027, 1, 1, tzinfo=UTC)
+    assert kwargs["include_archived"] is True
+
+
+def test_half_an_evidence_pair_is_rejected(http: TestClient, client: AsyncMock) -> None:
+    """Mirrors `test_half_a_subject_pair_is_rejected` -- `evidence` is
+    likewise a (kind, identifier) pair guarded by the same `paired()`
+    helper, and until this test existed nothing pinned that guard for
+    `evidence` specifically."""
+    response = http.get("/binnacle/v1/decisions", params={"evidence_kind": "commit"})
+    assert response.status_code == 422
+    assert (
+        response.json()["detail"]
+        == "evidence_kind and evidence_identifier must be supplied together"
+    )
+    client.relevant.assert_not_awaited()
+
+
+def test_all_filters_reach_relevant_count(http: TestClient, client: AsyncMock) -> None:
+    """`GET /decisions/count` shares `_FilterFields` with `GET /decisions`
+    and forwards all nine of them to `relevant_count()` -- pinned together
+    so that dropping any one of them (e.g. a bare `relevant_count()`) fails."""
+    client.relevant_count.return_value = 3
+    http.get(
+        "/binnacle/v1/decisions/count",
+        params={
+            "domains": ["architecture"],
+            "subject_kind": "component",
+            "subject_identifier": "portolan-ingest",
+            "evidence_kind": "commit",
+            "evidence_identifier": "abc123",
+            "status": ["current"],
+            "tier": "long_term",
+            "as_of": "2021-03-14T09:22:11Z",
+            "expiring_before": "2027-01-01T00:00:00Z",
+            "text": "retry policy",
+            "include_archived": True,
+        },
+    )
+    kwargs = client.relevant_count.await_args.kwargs
+    assert kwargs["domains"] == ["architecture"]
+    assert kwargs["subject"] == ("component", "portolan-ingest")
+    assert kwargs["evidence"] == ("commit", "abc123")
+    assert kwargs["status"] == ["current"]
+    assert kwargs["tier"] == "long_term"
+    assert kwargs["as_of"] == datetime(2021, 3, 14, 9, 22, 11, tzinfo=UTC)
+    assert kwargs["expiring_before"] == datetime(2027, 1, 1, tzinfo=UTC)
+    assert kwargs["text"] == "retry policy"
+    assert kwargs["include_archived"] is True
+
+
 def test_projection_full_returns_untruncated_decisions(http: TestClient, client: AsyncMock) -> None:
     """`projection=full` reaches the client verbatim and the endpoint's
     Page[CompactDecision] | Page[Decision] return type serializes the full

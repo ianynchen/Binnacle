@@ -19,6 +19,7 @@ from binnacle_core import (
     IdempotencyConflict,
     InactiveDomain,
     InvalidCursor,
+    InvalidSort,
     InvalidTransition,
     ItemAlreadyResolved,
     ItemNotFound,
@@ -34,9 +35,11 @@ CASES = [
     (ItemAlreadyResolved("already"), 409),
     (IdempotencyConflict("diverged"), 409),
     (InvalidCursor("malformed"), 400),
+    (InvalidSort("unrecognized sort key"), 400),
     (AuthorityViolation("agents cannot promote"), 403),
     (EmbeddingDimensionMismatch("expected 768, got 384"), 500),
     (ValueError("bad argument"), 422),
+    (TypeError("unsupported operand type(s) for +: 'int' and 'NoneType'"), 422),
 ]
 
 
@@ -79,6 +82,49 @@ def test_embedding_dimension_mismatch_body_is_an_rfc7807_problem_document(
     assert body["title"] == "EmbeddingDimensionMismatch"
     assert "expected 768, got 384" in body["detail"]
     assert body["type"].endswith("embedding_dimension_mismatch")
+
+
+def test_invalid_sort_body_is_an_rfc7807_problem_document(
+    http: TestClient, client: AsyncMock
+) -> None:
+    """`InvalidSort` is mapped to 400 in `STATUS_BY_ERROR` alongside
+    `InvalidCursor`, but until this test existed nothing pinned its problem-
+    document body on its own -- only `CASES`' bare status-code check did, so
+    deleting the `STATUS_BY_ERROR` entry entirely (an unmapped error
+    propagates as an unhandled exception rather than any HTTP response) was
+    indistinguishable from other 400s at a glance. `/domains` is the vehicle
+    endpoint here, as for every other case in this module -- the mapping
+    itself lives in `errors.py`, not in `/domains`."""
+    client.domains.side_effect = InvalidSort("unrecognized sort key")
+    response = http.get("/binnacle/v1/domains")
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["status"] == 400
+    assert body["title"] == "InvalidSort"
+    assert "unrecognized sort key" in body["detail"]
+    assert body["type"].endswith("invalid_sort")
+
+
+def test_type_error_body_is_an_rfc7807_problem_document(
+    http: TestClient, client: AsyncMock
+) -> None:
+    """`BinnacleAPIRoute` maps `TypeError` to 422 alongside `ValueError` --
+    both are argument misuse raised inside binnacle's own handlers (see the
+    class docstring in `errors.py`). Only the `ValueError` half of that
+    tuple had a body-asserting test before this one; dropping `TypeError`
+    from the `except` clause would let it propagate unhandled instead of
+    becoming a 422, which this pins directly rather than relying on the
+    bare status-code check in `CASES` above."""
+    client.domains.side_effect = TypeError(
+        "unsupported operand type(s) for +: 'int' and 'NoneType'"
+    )
+    response = http.get("/binnacle/v1/domains")
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["title"] == "TypeError"
+    assert body["type"].endswith("type_error")
+    assert body["detail"] == "unsupported operand type(s) for +: 'int' and 'NoneType'"
 
 
 def test_an_unmapped_error_is_not_silently_swallowed(http: TestClient, client: AsyncMock) -> None:

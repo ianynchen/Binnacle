@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock
+from unittest.mock import create_autospec
 
 import pytest
 from fastapi import FastAPI
@@ -25,14 +25,17 @@ def agent_actor() -> Actor:
 
 
 @pytest.fixture()
-def client() -> AsyncMock:
-    """A stand-in for Binnacle. `spec=` means a typo in a method name fails
-    the test rather than silently returning another mock."""
-    return AsyncMock(spec=Binnacle)
+def client() -> Binnacle:
+    """A stand-in for Binnacle. `create_autospec(..., spec_set=True)` checks
+    every call against `Binnacle`'s real signatures -- an unknown keyword
+    argument or wrong arity fails the test, rather than an `AsyncMock(spec=)`
+    which only guards attribute *names* (a typo'd method) and happily
+    accepts any arguments to a real one."""
+    return create_autospec(Binnacle, spec_set=True, instance=True)
 
 
 @pytest.fixture()
-def app(client: AsyncMock, human_actor: Actor) -> FastAPI:
+def app(client: Binnacle, human_actor: Actor) -> FastAPI:
     async def get_actor() -> Actor:
         return human_actor
 

@@ -208,10 +208,9 @@ register a response component independently of that media type.
 ## 5. Import Contract
 
 `packages/binnacle-router/pyproject.toml`'s `[tool.importlinter]` section
-resolves the dependency-boundary question `docs/OVERVIEW.md` §4 explicitly
-left open ("which part of binnacle-core's surface [binnacle-router] may
-depend on ... is binnacle-router's own future spec's responsibility to
-define and enforce"):
+enforces the dependency-boundary decision `docs/OVERVIEW.md` §4 states:
+`binnacle-router` depends on `binnacle-core`'s public surface only, never
+its `.application`/`.domain`/`.adapters` internals directly.
 
 ```toml
 [[tool.importlinter.contracts]]
@@ -318,6 +317,18 @@ packages/binnacle-router/src/binnacle_router/
 
 ## 8. Pending Decisions
 
-None outstanding for the REST surface documented here. MCP (REQUIREMENTS
-§5) is deferred to its own future architectural decision when that phase
-of work begins.
+MCP (REQUIREMENTS §5) is deferred to its own future architectural decision
+when that phase of work begins.
+
+One decision is open on the REST surface itself: **whether `limit` should
+be capped.** It is currently an unbounded `int` on every paginated
+endpoint (`GET /decisions`, `GET /queue`, `GET /changes`,
+`GET /precedent`) — `binnacle-core` validates neither an oversized nor a
+negative value, so both pass straight through.
+`docs/superpowers/specs/2026-09-05-binnacle-router-design.md` §10
+recommended capping it once the core spec's performance measurements
+existed at design scale rather than guessing a value up front; those
+measurements now exist (§6 above), but choosing and enforcing a specific
+cap is an API-policy call for the package owner to make, not one this task
+authorized. See the README's "Known gaps" section for the host-facing
+statement of this gap.

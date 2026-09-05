@@ -12,6 +12,8 @@ All notable changes to `binnacle-core` are documented here. Format follows
   `ArchivalSummary` are re-exported from the top-level package. They are
   named by public method signatures, so callers restricted to the public
   surface previously could not annotate what those methods return.
+- A `py.typed` marker, so consumers' type checkers treat this package's
+  types as real rather than `Any`.
 
 ## [0.4.0] - 2026-09-05
 
