@@ -438,3 +438,46 @@ class TestRelevantSorting:
         finally:
             await raw_store.aclose()
             await client.aclose()
+
+
+class TestChangesTiebreaker:
+    """Task 7: `changes()` gains `after_id` tiebreaker to handle transitions
+    sharing the same timestamp. Without it, they reappear on the next
+    `since=`-based fetch."""
+
+    async def test_after_id_excludes_transitions_already_seen(
+        self, pg_dsn: str, scratch_schema: str
+    ) -> None:
+        """Transitions sharing a timestamp would otherwise reappear on the next
+        `since=`-based fetch, since `since` alone cannot separate them."""
+        config = BinnacleConfig(
+            dsn=pg_dsn,
+            schema_name=scratch_schema,
+            embedder=StubEmbedder(dim=DIM),
+            embedding_dim=DIM,
+        )
+        client = Binnacle(config)
+        await client.migrate()
+        await client.add_domain("eng", "engineering", actor=HUMAN)
+
+        raw_store = PostgresStore(dsn=pg_dsn, schema_name=scratch_schema, embedding_dim=DIM)
+        try:
+            # Seed several decisions to ensure we have multiple transitions
+            for i in range(10):
+                await _seed(raw_store, _decision(), [1.0] * DIM)
+
+            first = await client.changes(limit=5)
+            assert first
+            last_transition = first[-1][0]
+
+            # Fetch again with since= set to the timestamp of the last transition
+            # and after_id= set to exclude it
+            following = await client.changes(
+                since=last_transition.at, after_id=last_transition.transition_id, limit=5
+            )
+
+            # Verify the last_transition is not in the following results
+            assert all(t.transition_id != last_transition.transition_id for t, _ in following)
+        finally:
+            await raw_store.aclose()
+            await client.aclose()

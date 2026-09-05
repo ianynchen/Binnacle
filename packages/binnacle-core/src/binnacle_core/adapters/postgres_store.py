@@ -1103,6 +1103,7 @@ class PostgresStore:
         actions: Sequence[str] | None = None,
         actor: Actor | None = None,
         limit: int = 500,
+        after_id: int | None = None,
     ) -> list[tuple[Transition, CompactDecision]]:
         schema = self._schema
         conditions = []
@@ -1116,6 +1117,9 @@ class PostgresStore:
         if actor is not None:
             conditions.append("t.actor = %(actor)s")
             params["actor"] = actor.as_str()
+        if after_id is not None:
+            conditions.append("t.transition_id < %(after_id)s")
+            params["after_id"] = after_id
         where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = (
             "SELECT t.*, d.domain AS d_domain, d.tier AS d_tier, d.status AS d_status, "

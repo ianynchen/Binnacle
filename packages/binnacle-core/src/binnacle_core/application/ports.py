@@ -423,10 +423,12 @@ class StorePort(Protocol):
         actions: Sequence[str] | None = None,
         actor: Actor | None = None,
         limit: int = 500,
+        after_id: int | None = None,
     ) -> list[tuple[Transition, CompactDecision]]:
         """FR-6.5: transitions filtered by window (`since`), `actions`, and
         `actor`, each paired with its decision's compact projection. Most-recent
-        first, capped at `limit`."""
+        first, capped at `limit`. `after_id` provides a tiebreaker for transitions
+        sharing the same timestamp."""
         ...
 
     async def open_queue(
