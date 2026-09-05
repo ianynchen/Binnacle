@@ -6,6 +6,8 @@ All notable changes to `binnacle-core` are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-05
+
 ### Added
 
 - Sortable ordering on `relevant()` (`decided_at`, `recorded_at`,
@@ -14,6 +16,13 @@ All notable changes to `binnacle-core` are documented here. Format follows
 - Keyset pagination on `relevant()` and `queue()` via opaque cursors.
 - `relevant_count()`, `queue_summary()`, `domain_summary()`.
 - `after_id` tiebreaker on `changes()`.
+- New public types `Page` and `DomainSummary`, and new typed errors
+  `InvalidCursor` (a malformed cursor, or one replayed under a different
+  ordering) and `InvalidSort` (an unrecognized sort key) — both raised
+  rather than allowed to escape as a bare `ValueError`/`KeyError`.
+- Migration `0004_evidence_ref_index`, a partial index backing the
+  `evidence` filter. Hosts must run `migrate()` to pick it up; a rollback
+  step ships with it.
 
 ### Changed
 
