@@ -164,6 +164,30 @@ would need "and" to describe it (GUIDELINES §8), and the other dashboard tiles
 ("5 stalest", "5 expiring soonest") need no aggregate at all — they are
 `relevant()` calls with the new sort keys and `limit=5`.
 
+### 3.7 Total count as a separate call
+
+```python
+async def relevant_count(self, ...same filters as relevant()...) -> int
+```
+
+`Page` deliberately carries **no** total count. Keyset pagination cannot
+produce one cheaply — it would require a second `COUNT(*)` over the whole
+filtered set on *every* page fetch, paid whether the caller wants it or not.
+
+Instead the count is its own call, made once and cached by the caller for as
+long as the filter set holds. It accepts exactly `relevant()`'s **filter**
+parameters (`domains`, `subject`, `status`, `tier`, `as_of`,
+`include_archived`, `evidence`, `expiring_before`, lexical text) and none of
+its presentation parameters (`sort`, `order`, `after`, `limit`, `projection`),
+which cannot affect a count.
+
+No equivalent is needed for `queue()`: `queue_summary()` (§3.6) already returns
+counts by kind, and their sum is the queue total.
+
+A cached count drifts as decisions are recorded or archived concurrently. That
+is acceptable — it is a UI affordance ("about 1,240 results"), not a value any
+caller should treat as transactionally consistent with the page in hand.
+
 ## 4. Public surface changes
 
 Additive, except where noted:
@@ -171,12 +195,13 @@ Additive, except where noted:
 - `relevant()` — five new parameters; **return type changes** to `Page[...]`
   (breaking, §7 DR-1).
 - `queue()` — `after` parameter; return type changes to `Page[QueueItemView]`
-  for consistency (breaking). This one is *proposed rather than settled* —
-  see §9, which weighs it against leaving `queue()` on a bare list.
+  (breaking). Settled (§9 OQ-2): taken now, alongside `relevant()`'s, because a
+  second breaking change later would cost far more than this one does today.
 - `changes()` — `after_id` parameter (additive; no return change).
-- `queue_summary()`, `domain_summary()`, `Page`, `DomainSummary` — new,
-  re-exported from the top-level package per its "deliberately narrow public
-  surface" contract (`binnacle_core/__init__.py`).
+- `queue_summary()`, `domain_summary()`, `relevant_count()` — new methods.
+- `Page`, `DomainSummary` — new types, re-exported from the top-level package
+  per its "deliberately narrow public surface" contract
+  (`binnacle_core/__init__.py`).
 
 `relevant()`'s existing `@overload` set (which narrows the return type by
 `projection`, guarded by `tests/unit/test_typing_narrowing.py`) must be updated
@@ -231,6 +256,11 @@ document.
   transition action is added. `last_touched_at` answers the journey's actual
   question ("has anything happened to this in years?") without extending the
   transition model.
+- **DR-7 Total count is a separate call, not a `Page` field.** Embedding it
+  would tax every page fetch with a second `COUNT(*)` over the full filtered
+  set, whether or not the caller wants it. As its own call it is paid once per
+  filter set and cached by the caller, and callers that never display a count
+  never pay for one.
 
 ## 8. Versioning
 
@@ -241,13 +271,16 @@ to ride a minor bump when called out explicitly). **Proposed, not applied** —
 
 ## 9. Open questions
 
-- **Does `Page` need a total count?** A UI showing "page 3 of 47" needs one;
-  keyset pagination cannot produce it cheaply (it requires a second `COUNT(*)`
-  over the full filtered set). Recommendation: omit it, and have
-  `binnacle-ui` render "load more" rather than numbered pages — but this is a
-  UX call worth making deliberately rather than by omission.
-- **Should `queue()`'s return type change too, or only `relevant()`'s?** This
-  spec proposes both for consistency, at the cost of a second breaking change.
-  Keeping `queue()` on a bare list is defensible if its result sets are
-  expected to stay small (open queue items are bounded by human attention in
-  practice).
+- **OQ-1** ~~Does `Page` need a total count?~~ **Resolved (2026-09-05):** no.
+  The count is a separate call, `relevant_count()` (§3.7), made once per filter
+  set and cached by the caller. Embedding it in `Page` would charge every page
+  fetch for a second `COUNT(*)` that most fetches don't need. `binnacle-ui`
+  renders "load more" rather than numbered pages.
+- **OQ-2** ~~Should `queue()`'s return type change too?~~ **Resolved
+  (2026-09-05):** yes — `queue()` returns `Page[QueueItemView]`, taken in the
+  same breaking change as `relevant()`. The decisive argument is timing rather
+  than symmetry: the marginal cost now is near zero, while discovering later
+  that the review-queue UI needs paging would mean a second breaking change
+  against however many consumers exist by then.
+
+None outstanding.
