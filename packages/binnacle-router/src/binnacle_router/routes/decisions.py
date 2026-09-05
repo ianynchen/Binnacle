@@ -159,7 +159,7 @@ def decision_read_router(binnacle: Binnacle) -> APIRouter:
     async def batch_get_decisions(body: BatchGetRequest) -> list[Decision]:
         return await binnacle.get_many(body.ids)
 
-    @router.get("/decisions/{decision_id}/history", response_model=None)
+    @router.get("/decisions/{decision_id}/history")
     async def decision_history(decision_id: UUID) -> HistoryRecord:
         return await binnacle.history(decision_id)
 

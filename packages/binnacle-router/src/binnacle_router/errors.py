@@ -4,6 +4,8 @@ import re
 from typing import Final, cast
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from binnacle_core import (
@@ -49,21 +51,31 @@ def _problem_type(exc: Exception) -> str:
     )
 
 
-def _problem(exc: Exception, status: int) -> JSONResponse:
+def _problem(
+    exc: Exception,
+    status: int,
+    *,
+    detail: str | None = None,
+    extra: dict[str, object] | None = None,
+) -> JSONResponse:
+    content: dict[str, object] = {
+        "type": _problem_type(exc),
+        "title": type(exc).__name__,
+        "status": status,
+        "detail": str(exc) if detail is None else detail,
+    }
+    if extra:
+        content.update(extra)
     return JSONResponse(
         status_code=status,
         media_type="application/problem+json",
-        content={
-            "type": _problem_type(exc),
-            "title": type(exc).__name__,
-            "status": status,
-            "detail": str(exc),
-        },
+        content=content,
     )
 
 
 def install_error_handlers(app: FastAPI) -> None:
-    """Register one handler per mapped core error, plus argument misuse.
+    """Register one handler per mapped core error, plus argument misuse and
+    FastAPI's own request-validation errors.
 
     Deliberately no catch-all for `BinnacleError`: an unmapped core error
     should surface as a 500 rather than be guessed into a 4xx that tells the
@@ -86,3 +98,23 @@ def install_error_handlers(app: FastAPI) -> None:
 
     app.add_exception_handler(ValueError, handle_argument_misuse)
     app.add_exception_handler(TypeError, handle_argument_misuse)
+
+    async def handle_request_validation_error(_: Request, exc: Exception) -> JSONResponse:
+        # Safe: `add_exception_handler` below only ever routes here for
+        # `RequestValidationError` itself.
+        validation_exc = cast(RequestValidationError, exc)
+        # `.errors()` can carry non-JSON-serializable values (e.g. in `ctx`) --
+        # `jsonable_encoder` is FastAPI's own default handler's approach to that.
+        errors = jsonable_encoder(validation_exc.errors())
+        # `str(exc)` is deliberately not used for `detail` here: this FastAPI
+        # version's `RequestValidationError.__str__` appends the server-side
+        # endpoint's file path and line number, which a public error body must
+        # not leak (GUIDELINES §9 "no secrets"). A summary built from the
+        # per-field errors -- which are carried in full in `errors` below --
+        # keeps `detail` informative without the leak.
+        detail = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in errors
+        )
+        return _problem(exc, 422, detail=detail, extra={"errors": errors})
+
+    app.add_exception_handler(RequestValidationError, handle_request_validation_error)

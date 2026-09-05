@@ -2,11 +2,20 @@
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
-from binnacle_core import Actor, CompactDecision, Decision, Page, Ref
+from binnacle_core import (
+    Actor,
+    CompactDecision,
+    Decision,
+    HistoryRecord,
+    Link,
+    Page,
+    Ref,
+    Transition,
+)
 
 
 def _page() -> Page[CompactDecision]:
@@ -129,9 +138,27 @@ def test_count_rejects_pagination_parameters(http: TestClient, client: AsyncMock
     """sort/after/limit cannot affect a count; accepting them would imply otherwise."""
     client.relevant_count.return_value = 7
     assert http.get("/binnacle/v1/decisions/count").json() == {"count": 7}
-    assert (
-        http.get("/binnacle/v1/decisions/count", params={"sort": "recorded_at"}).status_code == 422
-    )
+    response = http.get("/binnacle/v1/decisions/count", params={"sort": "recorded_at"})
+    assert response.status_code == 422
+
+
+def test_count_rejects_pagination_parameters_as_a_problem_document(
+    http: TestClient, client: AsyncMock
+) -> None:
+    """FastAPI's own request-validation errors -- not just binnacle_core's typed
+    errors -- must still come back as RFC 7807 `application/problem+json`
+    (project-wide constraint), field-level detail included rather than
+    discarded."""
+    response = http.get("/binnacle/v1/decisions/count", params={"sort": "recorded_at"})
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["status"] == 422
+    assert body["title"] == "RequestValidationError"
+    assert body["type"].endswith("request_validation_error")
+    assert isinstance(body["detail"], str) and body["detail"]
+    assert body["errors"][0]["loc"] == ["query", "sort"]
+    assert body["errors"][0]["msg"]
 
 
 def test_batch_get_takes_a_body_not_a_query_string(http: TestClient, client: AsyncMock) -> None:
@@ -165,11 +192,76 @@ def test_by_source_omits_unsupplied_filters(http: TestClient, client: AsyncMock)
     assert kwargs == {}
 
 
-def test_history_passes_the_path_id(http: TestClient, client: AsyncMock) -> None:
+def test_history_passes_the_path_id_and_the_record_round_trips(
+    http: TestClient, client: AsyncMock
+) -> None:
+    """`GET /decisions/{id}/history` declares `-> HistoryRecord`; FastAPI's
+    response-model validation must accept a real, fully populated record --
+    including the nested `Decision` and `Actor` -- and the JSON body must
+    carry every field through, not merely return 200."""
     decision_id = uuid4()
-    client.history.return_value = None
-    http.get(f"/binnacle/v1/decisions/{decision_id}/history")
+    predecessor_id = uuid4()
+    successor_id = uuid4()
+    supplement_id = uuid4()
+    conflict_id = uuid4()
+    recorded_by = Actor("human", "alice")
+    recorded_at = datetime(2021, 3, 14, 9, 22, 11, tzinfo=UTC)
+
+    def _decision(d_id: UUID) -> Decision:
+        return Decision(
+            decision_id=d_id,
+            domain="architecture",
+            tier="long_term",
+            status="current",
+            scenario="s",
+            outcome="o",
+            reasoning="r",
+            source="src",
+            recorded_by=recorded_by,
+            recorded_at=recorded_at,
+        )
+
+    history = HistoryRecord(
+        decision=_decision(decision_id),
+        transitions=[
+            Transition(
+                transition_id=1,
+                decision_id=decision_id,
+                action="recorded",
+                actor=recorded_by,
+                at=recorded_at,
+                reason="initial record",
+                new_status="current",
+                payload=None,
+            )
+        ],
+        links=[Link(from_id=decision_id, to_id=predecessor_id, kind="SUPERSEDES")],
+        predecessors=[_decision(predecessor_id)],
+        successors=[_decision(successor_id)],
+        supplements=[_decision(supplement_id)],
+        conflicts=[_decision(conflict_id)],
+    )
+    client.history.return_value = history
+
+    response = http.get(f"/binnacle/v1/decisions/{decision_id}/history")
+
+    assert response.status_code == 200
     assert client.history.await_args.args[0] == decision_id
+
+    body = response.json()
+    assert body["decision"]["decision_id"] == str(decision_id)
+    assert body["decision"]["recorded_by"] == {"kind": "human", "id": "alice"}
+    assert body["transitions"][0]["action"] == "recorded"
+    assert body["transitions"][0]["actor"] == {"kind": "human", "id": "alice"}
+    assert body["links"][0] == {
+        "from_id": str(decision_id),
+        "to_id": str(predecessor_id),
+        "kind": "SUPERSEDES",
+    }
+    assert body["predecessors"][0]["decision_id"] == str(predecessor_id)
+    assert body["successors"][0]["decision_id"] == str(successor_id)
+    assert body["supplements"][0]["decision_id"] == str(supplement_id)
+    assert body["conflicts"][0]["decision_id"] == str(conflict_id)
 
 
 def test_as_of_is_parsed_as_a_datetime(http: TestClient, client: AsyncMock) -> None:
