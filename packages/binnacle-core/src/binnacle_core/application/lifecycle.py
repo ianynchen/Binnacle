@@ -731,7 +731,10 @@ class LifecycleEngine:
         ran); callers fall back to `resolve_item` alone in that case, which still
         raises the correct `ItemNotFound`/`ItemAlreadyResolved`.
         """
-        for view in await self._store.open_queue():
+        # A miss here only degrades lock-ordering, not correctness (see above),
+        # so an exhaustive scan isn't required -- 50 (matching open_queue()'s
+        # own default) is deliberately chosen to keep this peek's cost bounded.
+        for view in (await self._store.open_queue(limit=50)).items:
             if view.item.item_id == item_id:
                 return view
         return None

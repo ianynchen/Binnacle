@@ -393,3 +393,24 @@ class ExportBundle:
     links: list[Link]
     transitions: list[Transition]
     domains: list[DomainRecord]
+
+
+@dataclass(frozen=True)
+class Page[T]:
+    """One page of a keyset-paginated read. `next_cursor` is opaque: pass it
+    back as `after=` to fetch the following page, or `None` when this page is
+    the last. Carries no total count -- see `Binnacle.relevant_count()`."""
+
+    items: list[T]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True)
+class DomainSummary:
+    """One registry row with its decision count (FR-6.10). Domains with no
+    decisions are included, with `decision_count == 0`."""
+
+    name: str
+    description: str
+    active: bool
+    decision_count: int

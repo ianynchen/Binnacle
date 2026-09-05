@@ -63,7 +63,7 @@ meridian (UI, authn/authz, jobs)          agents (via meridian tools)
 | **Domain Registry** | FR-2: governed domain list; human-only changes, transition-logged. |
 | **Lifecycle Engine** | FR-3/4/5: the ONLY writer of statuses, links, and transitions; enforces both state machines and the authority rule (I-2); executes promotion, supersession, supplements, archival, re-activation — each as one transaction (I-1). |
 | **Review Queue** | FR-4.3: pending-promote / pending-link / pending-supersede; ordering; resolutions delegate to the Lifecycle Engine. |
-| **Query Service** | FR-6: relevance (subject-or-unscoped, lexical filter), history (CTE over links + transitions), changes feed/audit, projections (full/compact), direct access, candidate enumeration, **precedent search** (pgvector k-NN + attribute filters, both tiers). |
+| **Query Service** | FR-6: relevance (subject-or-unscoped, evidence, lexical filter, sortable, keyset-paginated), history (CTE over links + transitions), changes feed/audit, projections (full/compact), direct access, candidate enumeration, aggregates/counts (`relevant_count`, `queue_summary`, `domain_summary` — FR-6.10), **precedent search** (pgvector k-NN + attribute filters, both tiers). |
 | **Discovery Pipeline** | FR-7.2/7.4: at backfill, k-NN candidates → structural filters → `Suggester` → capped, confidence-floored queue items. |
 | **Archival Sweep** | FR-3.4: clock-driven `archived` transitions via the Lifecycle Engine. |
 | **Exporter** | FR-6.6: filtered JSON export (decisions + links + transitions). |
@@ -180,6 +180,10 @@ CREATE TABLE domain_transitions (              -- FR-2.2 registry audit (no deci
 -- Hot-path partial indexes (NFR-5/NFR-7): active working set only.
 CREATE INDEX idx_dec_active   ON decisions(tier, domain, status) WHERE status NOT IN ('archived','discarded');
 CREATE INDEX idx_refs_subject ON refs(kind, identifier) WHERE role = 'subject';
+-- Added in migration 0004 (FR-6.1's `evidence` filter): idx_refs_subject's
+-- partial predicate (WHERE role = 'subject') cannot serve a role='evidence'
+-- lookup at all, so evidence filtering needs its own partial index.
+CREATE INDEX idx_refs_evidence ON refs(kind, identifier) WHERE role = 'evidence';
 CREATE INDEX idx_links_to     ON links(to_id, kind);
 CREATE INDEX idx_trans_time   ON transitions(at DESC);
 CREATE INDEX idx_trans_actor  ON transitions(actor, at DESC);

@@ -19,9 +19,11 @@ from binnacle_core.domain.models import (
     CompactDecision,
     Decision,
     DomainRecord,
+    DomainSummary,
     ExportBundle,
     HistoryRecord,
     LinkKind,
+    Page,
     PromotionAssessment,
     QueueItem,
     QueueItemView,
@@ -271,6 +273,14 @@ class StorePort(Protocol):
         query (`Binnacle.domains()`)."""
         ...
 
+    async def domain_summary(self) -> list[DomainSummary]:
+        """FR-6.10: every registered domain paired with its decision count, via
+        a `LEFT JOIN` from `domains` to `decisions` (never a `GROUP BY` over
+        `decisions` alone) so domains with zero decisions still appear, with
+        `decision_count == 0` — the registry-housekeeping use case this method
+        exists for. Name-ordered."""
+        ...
+
     async def get_decision(self, decision_id: UUID) -> Decision | None:
         """Fetch one decision, hydrated with its refs and declared
         supersedes/supplements (FR-6.8). `None` when `decision_id` doesn't exist."""
@@ -301,12 +311,19 @@ class StorePort(Protocol):
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: int = 200,
-    ) -> list[CompactDecision]: ...
+    ) -> Page[CompactDecision]: ...
 
     @overload
     async def relevant(
@@ -316,12 +333,19 @@ class StorePort(Protocol):
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: None,
-    ) -> list[Decision]: ...
+    ) -> Page[Decision]: ...
 
     async def relevant(
         self,
@@ -330,30 +354,95 @@ class StorePort(Protocol):
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         compact_chars: int | None = 200,
-    ) -> list[CompactDecision] | list[Decision]:
+    ) -> Page[CompactDecision] | Page[Decision]:
         """FR-6.1: decisions matching `domains` (default all), `status` (default
         `{"current"}`), `tier`, and `subject` — subject-ref match **or** unscoped
-        (no subject refs at all). `as_of` filters `valid_from`/`valid_until`
-        (default now, excluding decisions whose `valid_until` has passed). `text`
-        is an ILIKE substring filter over scenario/outcome/reasoning.
+        (no subject refs at all). `evidence` matches a decision's exact
+        evidence-ref (role `"evidence"`) — unlike `subject`, there is no
+        "or unscoped" fallback: citing evidence is an exact question, and a
+        decision that cites nothing does not answer it. `as_of` filters
+        `valid_from`/`valid_until` (default now, excluding decisions whose
+        `valid_until` has passed). `expiring_before` matches decisions whose
+        `valid_until` is set and falls before that timestamp — decisions with no
+        `valid_until` never match (a decision that never expires is not
+        "expiring soon"); this is independent of, and composes without conflict
+        with, `sort="valid_until"`'s own `valid_until IS NOT NULL` guard below.
+        `text` is an ILIKE substring filter over scenario/outcome/reasoning.
         `include_archived` adds `"archived"` to the effective status set.
 
-        Ordered deterministically: recency (`recorded_at` descending), then id.
+        Ordered by `sort` (default `"recorded_at"`) and `order` (default
+        `"desc"`), then id ascending as a deterministic tiebreaker. `sort`'s four
+        closed keys: `decided_at`, `recorded_at`, `last_touched_at` (derived —
+        `MAX(transitions.at)`, so a decision supplemented recently is not
+        stale even if `recorded_at` is old), and `valid_until` (implicitly
+        excludes decisions with no expiry, since ordering by a column that's
+        NULL for most rows is meaningless).
 
-        Projection: `compact_chars` an `int` returns `list[CompactDecision]` with
+        Pagination: returns a `Page` carrying `items` plus an opaque
+        `next_cursor` (`None` on the last page) — pass that cursor back as
+        `after` to fetch the next page. The cursor is minted by the store
+        (not constructible by a caller) because `last_touched_at` is derived
+        and absent from `Decision`/`CompactDecision`, so a caller could not
+        build the next cursor from what it received.
+
+        Projection: `compact_chars` an `int` returns `Page[CompactDecision]` with
         `outcome` truncated to that length **in SQL** (no fetch-then-trim, FR-6.7);
-        `compact_chars=None` returns the full `list[Decision]`. The two
+        `compact_chars=None` returns the full `Page[Decision]`. The two
         `@overload`s above narrow the return type at each call site on a
         literal/omitted vs. `None` `compact_chars`, so callers get
-        `list[CompactDecision]`/`list[Decision]` without a cast; this last
+        `Page[CompactDecision]`/`Page[Decision]` without a cast; this last
         signature is the Protocol's structurally-checked one, and conforming
         implementations (e.g. `PostgresStore.relevant`) carry the same
         overload pair plus one real implementation.
+
+        Raises:
+            InvalidCursor: `after` is malformed, or was minted under a
+                different `sort`/`order` than this call's.
+            InvalidSort: `sort` is not one of the four closed keys above.
+        """
+        ...
+
+    async def relevant_count(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+    ) -> int:
+        """FR-6.10: how many decisions match `relevant()`'s filters. Takes no
+        presentation parameters -- cursor and limit cannot affect a count.
+
+        `sort` is the one exception: `relevant()` silently adds
+        `valid_until IS NOT NULL` to its `WHERE` when called with
+        `sort="valid_until"` (a decision that never expires has no position in
+        an expiry ordering), and this call has no `sort` parameter to
+        replicate that with. A caller pairing this count with a
+        `sort="valid_until"` page — e.g. a dashboard's "expiring soonest"
+        tile — will see a count that includes never-expiring decisions the
+        page never shows. Do not drop the guard to make them agree: it is load
+        bearing for the `valid_until` keyset predicate, which cannot compare
+        against NULL. Instead, that caller should add its own
+        `expiring_before` filter (which already excludes NULL `valid_until`)
+        to both calls, or otherwise treat this count as an upper bound for a
+        `sort="valid_until"` page rather than an exact match.
         """
         ...
 
@@ -374,22 +463,62 @@ class StorePort(Protocol):
         actions: Sequence[str] | None = None,
         actor: Actor | None = None,
         limit: int = 500,
+        after_id: int | None = None,
     ) -> list[tuple[Transition, CompactDecision]]:
         """FR-6.5: transitions filtered by window (`since`), `actions`, and
         `actor`, each paired with its decision's compact projection. Most-recent
-        first, capped at `limit`."""
+        first, capped at `limit`.
+
+        Pagination: `after_id` resumes past a specific transition, not merely a
+        timestamp -- pass the previous page's last transition's `transition_id`
+        as `after_id` **and** that same transition's `at` as `since` together.
+        Postgres's `now()` (the `at` column's default) is transaction *start*
+        time, so two overlapping transactions can commit in an order that
+        disagrees with which one started, and therefore with which one got the
+        lower `transition_id`; `transition_id` and `at` can then sort in
+        opposite directions for two rows. `after_id` alone (`transition_id <
+        after_id`) is blind to that and can skip such a row forever. Passing
+        `since` alongside it lets the store apply
+        `(at < since) OR (at = since AND transition_id < after_id)`, which
+        agrees with the feed's own `ORDER BY at DESC, transition_id DESC` even
+        when id order and `at` order disagree.
+
+        Raises:
+            ValueError: `after_id` is given without `since`.
+        """
         ...
 
     async def open_queue(
         self,
         kinds: Sequence[str] | None = None,
         order: Literal["oldest", "shakiest", "domain"] = "oldest",
-    ) -> list[QueueItemView]:
+        limit: int = 50,
+        after: str | None = None,
+    ) -> Page[QueueItemView]:
         """FR-4.3/6.4: open (unresolved) queue items, optionally restricted to
         `kinds`. `oldest` sorts by `proposed_at` ascending; `domain` by the
         subject decision's domain; `shakiest` by confidence ascending — the
         item's own `confidence`, else the subject decision's `confidence`, else
-        `1.0` (sorted last)."""
+        `1.0` (sorted last). All three orderings tiebreak on `item_id` ascending.
+
+        Pagination: returns a `Page` carrying `items` plus an opaque
+        `next_cursor` (`None` on the last page) — pass that cursor back as
+        `after` to fetch the next page. The cursor's `sort` field is the
+        `order` name itself, so replaying a cursor under a different `order`
+        is refused the same way `relevant()` refuses a cursor replayed under a
+        different `sort`.
+
+        Raises:
+            InvalidCursor: `after` is malformed, or was minted under a
+                different `order` than this call's.
+        """
+        ...
+
+    async def queue_summary(self, domains: Sequence[str] | None = None) -> dict[str, int]:
+        """FR-6.10: open (unresolved) queue item counts grouped by `kind`,
+        optionally restricted to `domains` (the subject decision's domain).
+        Resolved items are excluded -- a summary that counted them would
+        report the review backlog as permanently growing."""
         ...
 
     async def by_source(self, source: str, **filters: Any) -> list[CompactDecision]:

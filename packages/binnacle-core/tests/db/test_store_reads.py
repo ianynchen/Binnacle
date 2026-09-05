@@ -297,7 +297,7 @@ class TestRelevant:
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
         results = await store.relevant(subject=("component", "portolan-ingest"))
-        ids = {d.id for d in results}
+        ids = {d.id for d in results.items}
         assert narrative.batching in ids  # scoped, matches subject
         assert narrative.general in ids  # unscoped, applies generally (FR-6.1)
         assert narrative.other_component not in ids  # scoped to a different subject
@@ -307,50 +307,50 @@ class TestRelevant:
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
         results = await store.relevant()
-        ids = {d.id for d in results}
+        ids = {d.id for d in results.items}
         assert narrative.batching in ids
         assert narrative.other_component in ids
 
     async def test_default_status_excludes_superseded_discarded_archived(
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
-        ids = {d.id for d in await store.relevant()}
+        ids = {d.id for d in (await store.relevant()).items}
         assert narrative.backoff not in ids
         assert narrative.discarded not in ids
         assert narrative.archived not in ids
 
     async def test_explicit_status_filter(self, store: PostgresStore, narrative: Narrative) -> None:
         results = await store.relevant(status=["superseded"])
-        assert {d.id for d in results} == {narrative.backoff}
+        assert {d.id for d in results.items} == {narrative.backoff}
 
     async def test_include_archived_expands_the_default_status_set(
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
-        without = {d.id for d in await store.relevant()}
-        with_archived = {d.id for d in await store.relevant(include_archived=True)}
+        without = {d.id for d in (await store.relevant()).items}
+        with_archived = {d.id for d in (await store.relevant(include_archived=True)).items}
         assert narrative.archived not in without
         assert narrative.archived in with_archived
 
     async def test_as_of_default_excludes_expired_valid_until(
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
-        assert narrative.expired not in {d.id for d in await store.relevant()}
+        assert narrative.expired not in {d.id for d in (await store.relevant()).items}
 
     async def test_as_of_in_the_past_includes_a_then_still_valid_decision(
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
         as_of = narrative.now - timedelta(days=3)  # within expired's [valid_from, valid_until)
         results = await store.relevant(as_of=as_of)
-        assert narrative.expired in {d.id for d in results}
+        assert narrative.expired in {d.id for d in results.items}
 
     async def test_domain_filter(self, store: PostgresStore, narrative: Narrative) -> None:
-        assert await store.relevant(domains=["product"]) == []
+        assert (await store.relevant(domains=["product"])).items == []
 
     async def test_text_filter_matches_scenario_outcome_or_reasoning(
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
         results = await store.relevant(text="circuit breaker")
-        assert {d.id for d in results} == {narrative.other_component}
+        assert {d.id for d in results.items} == {narrative.other_component}
 
     async def test_text_filter_escapes_ilike_metacharacters(self, store: PostgresStore) -> None:
         """`_` and `%` are ILIKE wildcards (any-one-char, any-run-of-chars); a
@@ -372,10 +372,10 @@ class TestRelevant:
                     tx, d.decision_id, "recorded", HUMAN.as_str(), None, None, "current"
                 )
 
-        underscore_results = {d.id for d in await store.relevant(text="user_id")}
+        underscore_results = {d.id for d in (await store.relevant(text="user_id")).items}
         assert underscore_results == {literal_underscore.decision_id}
 
-        percent_results = {d.id for d in await store.relevant(text="50% of users")}
+        percent_results = {d.id for d in (await store.relevant(text="50% of users")).items}
         assert percent_results == {literal_percent.decision_id}
 
     async def test_compact_projection_truncates_outcome_in_sql(
@@ -384,7 +384,7 @@ class TestRelevant:
         # Also matches the unscoped `general`/`supplement` decisions (FR-6.1); pick
         # out `other_component` specifically to check its truncated outcome.
         results = await store.relevant(subject=("component", "other-service"), compact_chars=5)
-        other = next(d for d in results if d.id == narrative.other_component)
+        other = next(d for d in results.items if d.id == narrative.other_component)
         assert isinstance(other, CompactDecision)
         assert other.outcome_truncated == "use a"
 
@@ -392,7 +392,7 @@ class TestRelevant:
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
         results = await store.relevant(subject=("component", "other-service"), compact_chars=None)
-        other = next(d for d in results if d.decision_id == narrative.other_component)
+        other = next(d for d in results.items if d.decision_id == narrative.other_component)
         assert isinstance(other, Decision)
         assert other.refs
 
@@ -402,14 +402,14 @@ class TestRelevant:
         results = await store.relevant(
             domains=["architecture"], status=["current"], compact_chars=None
         )
-        recorded_ats = [d.recorded_at for d in results]
+        recorded_ats = [d.recorded_at for d in results.items]
         assert recorded_ats == sorted(recorded_ats, reverse=True)
 
     async def test_limit_caps_result_count(
         self, store: PostgresStore, narrative: Narrative
     ) -> None:
         results = await store.relevant(domains=["architecture"], status=["current"], limit=1)
-        assert len(results) == 1
+        assert len(results.items) == 1
 
 
 class TestHistory:
@@ -547,11 +547,13 @@ class TestOpenQueue:
         assert item_default_last is not None
 
         views = await store.open_queue(order="shakiest")
-        order = [v.item.item_id for v in views]
+        order = [v.item.item_id for v in views.items]
         assert order.index(item_explicit) < order.index(item_falls_back_to_decision)
         assert order.index(item_falls_back_to_decision) < order.index(item_default_last)
 
-        fallback_view = next(v for v in views if v.item.item_id == item_falls_back_to_decision)
+        fallback_view = next(
+            v for v in views.items if v.item.item_id == item_falls_back_to_decision
+        )
         assert fallback_view.decision_confidence == 0.8
 
     async def test_oldest_orders_by_proposed_at(
@@ -564,7 +566,7 @@ class TestOpenQueue:
                 tx, "promote", narrative.other_component, None, HUMAN, "r", 0.5
             )
         views = await store.open_queue(order="oldest")
-        assert [v.item.item_id for v in views] == [first, second]
+        assert [v.item.item_id for v in views.items] == [first, second]
 
     async def test_kinds_filter(self, store: PostgresStore, narrative: Narrative) -> None:
         async with store.transaction() as tx:
@@ -575,7 +577,7 @@ class TestOpenQueue:
                 tx, "link", narrative.general, narrative.other_component, ENGINE, "r", 0.5
             )
         views = await store.open_queue(kinds=["promote"])
-        assert [v.item.item_id for v in views] == [promote_item]
+        assert [v.item.item_id for v in views.items] == [promote_item]
 
 
 class TestBySource:

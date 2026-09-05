@@ -38,8 +38,10 @@ from binnacle_core.domain.models import (
     Decision,
     DiscoverySummary,
     DomainRecord,
+    DomainSummary,
     HistoryRecord,
     NewDecision,
+    Page,
     PrecedentHit,
     QueueItemView,
     Tier,
@@ -171,49 +173,83 @@ class Binnacle:
         self,
         domains: Sequence[str] | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         projection: Literal["compact"] = "compact",
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         include_archived: bool = False,
-    ) -> list[CompactDecision]: ...
+    ) -> Page[CompactDecision]: ...
 
     @overload
     async def relevant(
         self,
         domains: Sequence[str] | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         *,
         projection: Literal["full"],
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         include_archived: bool = False,
-    ) -> list[Decision]: ...
+    ) -> Page[Decision]: ...
 
     async def relevant(
         self,
         domains: Sequence[str] | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
         text: str | None = None,
         projection: Literal["compact", "full"] = "compact",
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
+        after: str | None = None,
         include_archived: bool = False,
-    ) -> "list[CompactDecision] | list[Decision]":
+    ) -> "Page[CompactDecision] | Page[Decision]":
         """FR-6.1 relevance query. `projection='compact'` (default) truncates
         `outcome` to `config.compact_outcome_chars` in SQL (FR-6.7) and returns
-        `list[CompactDecision]`; `'full'` returns the untruncated
-        `list[Decision]`. The two `@overload`s above narrow the return type at
+        `Page[CompactDecision]`; `'full'` returns the untruncated
+        `Page[Decision]`. The two `@overload`s above narrow the return type at
         each call site for a literal `projection` (the common case, since it
         has a default); passing a non-literal `projection` value falls back to
-        this signature's `list[CompactDecision] | list[Decision]`.
+        this signature's `Page[CompactDecision] | Page[Decision]`.
+
+        `evidence` and `expiring_before` are plain filters -- see
+        `StorePort.relevant`'s docstring for their exact semantics (evidence
+        has no "or unscoped" fallback the way `subject` does; expiring_before
+        excludes decisions with no `valid_until`).
+
+        `sort` (default `"recorded_at"`) and `order` (default `"desc"`)
+        reproduce the pre-existing ordering unless overridden -- see
+        `StorePort.relevant`'s docstring for the four closed sort keys.
+
+        `after` resumes from a previous page's `Page.next_cursor` (`None` for
+        the first page). See `StorePort.relevant`'s docstring for why the
+        cursor is store-minted rather than caller-constructed.
 
         Dispatches to one of two `self._store.relevant(...)` calls, each
         passing a concrete `compact_chars` (an `int` literal or `None`)
@@ -224,6 +260,12 @@ class Binnacle:
         parameters that combinatorial check exceeds mypy's limit ("Not all
         union combinations were tried"). Passing a literal per branch keeps
         each call resolvable to exactly one overload.
+
+        Raises:
+            InvalidCursor: `after` is malformed, or was minted under a
+                different `sort`/`order` than this call's.
+            InvalidSort: `sort` is not one of the four closed keys named
+                above.
         """
         if projection == "compact":
             return await self._store.relevant(
@@ -231,10 +273,15 @@ class Binnacle:
                 status=status,
                 tier=tier,
                 subject=subject,
+                evidence=evidence,
                 as_of=as_of,
+                expiring_before=expiring_before,
                 text=text,
                 include_archived=include_archived,
+                sort=sort,
+                order=order,
                 limit=limit,
+                after=after,
                 compact_chars=self._config.compact_outcome_chars,
             )
         return await self._store.relevant(
@@ -242,11 +289,57 @@ class Binnacle:
             status=status,
             tier=tier,
             subject=subject,
+            evidence=evidence,
             as_of=as_of,
+            expiring_before=expiring_before,
             text=text,
             include_archived=include_archived,
+            sort=sort,
+            order=order,
             limit=limit,
+            after=after,
             compact_chars=None,
+        )
+
+    async def relevant_count(
+        self,
+        domains: Sequence[str] | None = None,
+        subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
+        status: Sequence[str] = ("current",),
+        tier: Tier | None = None,
+        as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+    ) -> int:
+        """FR-6.10: the total matching `relevant()`'s filters, for a caller that
+        wants "about N results" alongside a paged read. Deliberately a separate
+        call rather than a field on `Page`: embedding it would charge every page
+        fetch for a COUNT(*) that most fetches do not need. The value drifts as
+        decisions are recorded or archived concurrently -- it is a UI
+        affordance, not a figure consistent with the page in hand.
+
+        This call has no `sort` parameter, so it cannot replicate the
+        `valid_until IS NOT NULL` guard `relevant()` silently adds when called
+        with `sort="valid_until"`. A caller pairing this count with such a
+        page -- e.g. a dashboard's "expiring soonest" tile -- will see a
+        larger number than the page can ever fill, since this count still
+        includes decisions that never expire. See
+        `StorePort.relevant_count`'s docstring for the recommended workaround
+        (an `expiring_before` filter on both calls, or treating this as an
+        upper bound rather than an exact total for that one sort key).
+        """
+        return await self._store.relevant_count(
+            domains=domains,
+            status=status,
+            tier=tier,
+            subject=subject,
+            evidence=evidence,
+            as_of=as_of,
+            expiring_before=expiring_before,
+            text=text,
+            include_archived=include_archived,
         )
 
     async def history(self, decision_id: UUID) -> HistoryRecord:
@@ -278,9 +371,21 @@ class Binnacle:
         self,
         kinds: Sequence[str] | None = None,
         order: Literal["oldest", "shakiest", "domain"] = "oldest",
-    ) -> list[QueueItemView]:
-        """FR-4.3/6.4: open queue items. See `StorePort.open_queue`."""
-        return await self._store.open_queue(kinds=kinds, order=order)
+        limit: int = 50,
+        after: str | None = None,
+    ) -> Page[QueueItemView]:
+        """FR-4.3/6.4: open queue items. See `StorePort.open_queue`.
+
+        Raises:
+            InvalidCursor: `after` is malformed, or was minted under a
+                different `order` than this call's.
+        """
+        return await self._store.open_queue(kinds=kinds, order=order, limit=limit, after=after)
+
+    async def queue_summary(self, domains: Sequence[str] | None = None) -> dict[str, int]:
+        """FR-6.10: open queue item counts by kind, optionally restricted to
+        `domains`. See `StorePort.queue_summary`."""
+        return await self._store.queue_summary(domains=domains)
 
     async def changes(
         self,
@@ -288,9 +393,16 @@ class Binnacle:
         actions: Sequence[str] | None = None,
         actor: Actor | None = None,
         limit: int = 500,
+        after_id: int | None = None,
     ) -> list[tuple[Transition, CompactDecision]]:
-        """FR-6.5: the changes feed. See `StorePort.changes`."""
-        return await self._store.changes(since, actions, actor, limit)
+        """FR-6.5: the changes feed. See `StorePort.changes` for full pagination
+        semantics -- `after_id` must be paired with `since` set to that same
+        boundary transition's `at`, or the tiebreaker cannot be built.
+
+        Raises:
+            ValueError: `after_id` is given without `since`.
+        """
+        return await self._store.changes(since, actions, actor, limit, after_id)
 
     async def get_many(self, ids: Sequence[UUID]) -> list[Decision]:
         """FR-6.8: batch get-by-id. See `StorePort.get_many`."""
@@ -318,6 +430,11 @@ class Binnacle:
     async def domains(self) -> list[DomainRecord]:
         """FR-2.1: every registered domain. See `StorePort.list_domains`."""
         return await self._store.list_domains()
+
+    async def domain_summary(self) -> list[DomainSummary]:
+        """FR-6.10: every registered domain paired with its decision count,
+        including domains with zero. See `StorePort.domain_summary`."""
+        return await self._store.domain_summary()
 
     async def add_domain(self, name: str, description: str, actor: Actor) -> None:
         """Register a new domain, or re-register (and reactivate) an existing

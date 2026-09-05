@@ -46,12 +46,14 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from yoyo import get_backend, read_migrations
 
+from binnacle_core.application.cursors import decode_cursor, encode_cursor
 from binnacle_core.application.ports import DecisionRow, InsertOutcome, StorePort, Tx
 from binnacle_core.domain.errors import (
     ConfigError,
     DecisionNotFound,
     EmbeddingDimensionMismatch,
     IdempotencyConflict,
+    InvalidSort,
     ItemAlreadyResolved,
     ItemNotFound,
 )
@@ -60,11 +62,13 @@ from binnacle_core.domain.models import (
     CompactDecision,
     Decision,
     DomainRecord,
+    DomainSummary,
     ExportBundle,
     HistoryRecord,
     Link,
     LinkKind,
     OptionConsidered,
+    Page,
     QueueItem,
     QueueItemView,
     QueueKind,
@@ -86,6 +90,22 @@ _DEFAULT_COMPACT_CHARS = 200
 # FR-6.1 default relevance status set — "current" only, unless widened by an
 # explicit `status` filter or `include_archived`.
 _DEFAULT_RELEVANT_STATUS = frozenset({"current"})
+
+# `relevant()`'s four closed sort keys, mapped to their SQL expression.
+_SORT_EXPRESSIONS: dict[str, str] = {
+    "decided_at": "d.decided_at",
+    "recorded_at": "d.recorded_at",
+    "valid_until": "d.valid_until",
+    "last_touched_at": "lt.last_touched_at",
+}
+
+# `open_queue()`'s three closed orderings, mapped to their leading sort
+# expression (the value the keyset cursor carries).
+_QUEUE_SORT_EXPRESSIONS: dict[str, str] = {
+    "oldest": "q.proposed_at",
+    "shakiest": "COALESCE(q.confidence, d.confidence, 1.0)",
+    "domain": "d.domain",
+}
 
 # FR-6.6 export document schema version (the bundle's own JSON shape, distinct
 # from `decisions.schema_version`).
@@ -684,6 +704,28 @@ class PostgresStore:
             for r in rows
         ]
 
+    async def domain_summary(self) -> list[DomainSummary]:
+        schema = self._schema
+        sql = (
+            f"SELECT dm.name, dm.description, dm.active, "
+            f"COUNT(d.decision_id) AS decision_count "
+            f"FROM {schema}.domains dm "
+            f"LEFT JOIN {schema}.decisions d ON d.domain = dm.name "
+            "GROUP BY dm.name, dm.description, dm.active ORDER BY dm.name"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql)
+            rows = await cur.fetchall()
+        return [
+            DomainSummary(
+                name=r["name"],
+                description=r["description"],
+                active=r["active"],
+                decision_count=int(r["decision_count"]),
+            )
+            for r in rows
+        ]
+
     async def get_decision(self, decision_id: UUID) -> Decision | None:
         async with self._read_conn() as conn:
             cur = await conn.execute(
@@ -737,49 +779,23 @@ class PostgresStore:
             for r in rows
         ]
 
-    @overload
-    async def relevant(
+    def _relevant_where(
         self,
         *,
-        domains: Sequence[str] | None = None,
-        status: Sequence[str] | None = None,
-        tier: Tier | None = None,
-        subject: tuple[str, str] | None = None,
-        as_of: datetime | None = None,
-        text: str | None = None,
-        include_archived: bool = False,
-        limit: int = 50,
-        compact_chars: int = 200,
-    ) -> list[CompactDecision]: ...
-
-    @overload
-    async def relevant(
-        self,
-        *,
-        domains: Sequence[str] | None = None,
-        status: Sequence[str] | None = None,
-        tier: Tier | None = None,
-        subject: tuple[str, str] | None = None,
-        as_of: datetime | None = None,
-        text: str | None = None,
-        include_archived: bool = False,
-        limit: int = 50,
-        compact_chars: None,
-    ) -> list[Decision]: ...
-
-    async def relevant(
-        self,
-        *,
-        domains: Sequence[str] | None = None,
-        status: Sequence[str] | None = None,
-        tier: Tier | None = None,
-        subject: tuple[str, str] | None = None,
-        as_of: datetime | None = None,
-        text: str | None = None,
-        include_archived: bool = False,
-        limit: int = 50,
-        compact_chars: int | None = 200,
-    ) -> "list[CompactDecision] | list[Decision]":
+        domains: Sequence[str] | None,
+        status: Sequence[str] | None,
+        tier: Tier | None,
+        subject: tuple[str, str] | None,
+        evidence: tuple[str, str] | None,
+        as_of: datetime | None,
+        expiring_before: datetime | None,
+        text: str | None,
+        include_archived: bool,
+    ) -> tuple[str, dict[str, Any]]:
+        """The FR-6.1 filter set as SQL. Shared verbatim by `relevant()` and
+        `relevant_count()` so the two can never disagree about what a filter
+        means -- a divergence would make counts silently contradict the pages
+        they describe."""
         schema = self._schema
         statuses = set(status) if status is not None else set(_DEFAULT_RELEVANT_STATUS)
         if include_archived:
@@ -787,11 +803,7 @@ class PostgresStore:
         effective_as_of = as_of if as_of is not None else datetime.now(UTC)
 
         conditions = ["d.status = ANY(%(statuses)s)"]
-        params: dict[str, Any] = {
-            "statuses": list(statuses),
-            "as_of": effective_as_of,
-            "limit": limit,
-        }
+        params: dict[str, Any] = {"statuses": list(statuses), "as_of": effective_as_of}
         conditions.append("(d.valid_from IS NULL OR d.valid_from <= %(as_of)s)")
         conditions.append("(d.valid_until IS NULL OR d.valid_until > %(as_of)s)")
         if domains is not None:
@@ -810,47 +822,255 @@ class PostgresStore:
             )
             params["subj_kind"] = subj_kind
             params["subj_id"] = subj_id
+        if evidence is not None:
+            ev_kind, ev_id = evidence
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM {schema}.refs re "
+                "WHERE re.decision_id = d.decision_id AND re.role = 'evidence' "
+                "AND re.kind = %(ev_kind)s AND re.identifier = %(ev_id)s)"
+            )
+            params["ev_kind"] = ev_kind
+            params["ev_id"] = ev_id
+        if expiring_before is not None:
+            conditions.append("(d.valid_until IS NOT NULL AND d.valid_until < %(expiring_before)s)")
+            params["expiring_before"] = expiring_before
         if text is not None:
             conditions.append(
                 "(d.scenario ILIKE %(text)s OR d.outcome ILIKE %(text)s OR d.reasoning ILIKE %(text)s)"
             )
             params["text"] = f"%{_escape_ilike(text)}%"
-        where_sql = " AND ".join(conditions)
+        return " AND ".join(conditions), params
+
+    def _relevant_order(self, sort: str, order: str) -> tuple[str, str, str]:
+        """Returns (join_sql, sort_expression, order_by_sql).
+
+        The tiebreaker stays `d.decision_id ASC` in both directions, preserving
+        the ordering that shipped before this parameter existed. Its direction
+        deliberately differs from the primary sort's -- see the keyset predicate
+        in `_relevant_keyset`, which is written out longhand for that reason.
+
+        `relevant()` calls this before it ever calls `_relevant_keyset` (which
+        indexes `_SORT_EXPRESSIONS` with the same `sort`), so validating here
+        is the one choke point that guards both lookups.
+
+        Raises:
+            InvalidSort: `sort` is not one of `_SORT_EXPRESSIONS`'s closed
+                keys -- e.g. a value that bypassed the `Literal` type check
+                (a REST layer deserializing an untyped request body). Without
+                this, the dict lookup below would raise a bare `KeyError`.
+        """
+        if sort not in _SORT_EXPRESSIONS:
+            msg = f"unknown sort {sort!r}; expected one of {sorted(_SORT_EXPRESSIONS)}"
+            raise InvalidSort(msg)
+        expr = _SORT_EXPRESSIONS[sort]
+        join_sql = ""
+        if sort == "last_touched_at":
+            join_sql = (
+                f" LEFT JOIN LATERAL (SELECT MAX(t.at) AS last_touched_at "
+                f"FROM {self._schema}.transitions t "
+                "WHERE t.decision_id = d.decision_id) lt ON TRUE"
+            )
+        direction = "DESC" if order == "desc" else "ASC"
+        return join_sql, expr, f"ORDER BY {expr} {direction}, d.decision_id ASC"
+
+    def _relevant_keyset(self, *, sort: str, order: str, after: str, params: dict[str, Any]) -> str:
+        """The 'resume after this row' condition.
+
+        Written longhand rather than as the compact row comparison
+        `(a, b) < (x, y)`, because that form requires both columns to sort in
+        the same direction and this ordering's tiebreaker deliberately runs
+        opposite to its primary sort.
+        """
+        value, _value2, tiebreaker = decode_cursor(after, sort=sort, order=order)
+        expr = _SORT_EXPRESSIONS[sort]
+        params["cursor_value"] = value
+        params["cursor_id"] = tiebreaker
+        comparison = "<" if order == "desc" else ">"
+        return (
+            f"(({expr} {comparison} %(cursor_value)s) "
+            f"OR ({expr} = %(cursor_value)s AND d.decision_id > %(cursor_id)s))"
+        )
+
+    @overload
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
+        limit: int = 50,
+        after: str | None = None,
+        compact_chars: int = 200,
+    ) -> Page[CompactDecision]: ...
+
+    @overload
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
+        limit: int = 50,
+        after: str | None = None,
+        compact_chars: None,
+    ) -> Page[Decision]: ...
+
+    async def relevant(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
+        limit: int = 50,
+        after: str | None = None,
+        compact_chars: int | None = 200,
+    ) -> "Page[CompactDecision] | Page[Decision]":
+        schema = self._schema
+        where_sql, params = self._relevant_where(
+            domains=domains,
+            status=status,
+            tier=tier,
+            subject=subject,
+            evidence=evidence,
+            as_of=as_of,
+            expiring_before=expiring_before,
+            text=text,
+            include_archived=include_archived,
+        )
+
+        join_sql, _sort_expr, order_sql = self._relevant_order(sort, order)
+        if sort == "valid_until":
+            where_sql = f"{where_sql} AND d.valid_until IS NOT NULL"
+
+        if after is not None:
+            where_sql = f"{where_sql} AND {
+                self._relevant_keyset(sort=sort, order=order, after=after, params=params)
+            }"
+        params["limit"] = limit + 1  # one extra row tells us whether more remain
 
         if compact_chars is not None:
             params["compact_chars"] = compact_chars
             sql = (
                 f"SELECT d.decision_id, d.domain, d.tier, d.status, "
-                f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
-                f"FROM {schema}.decisions d WHERE {where_sql} "
-                "ORDER BY d.recorded_at DESC, d.decision_id ASC LIMIT %(limit)s"
+                f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated, "
+                f"{_sort_expr} AS _sort_value "
+                f"FROM {schema}.decisions d{join_sql} WHERE {where_sql} "
+                f"{order_sql} LIMIT %(limit)s"
             )
             async with self._read_conn() as conn:
                 cur = await conn.execute(sql, params)
                 rows = await cur.fetchall()
+                has_more = len(rows) > limit
+                rows = rows[:limit]
                 subject_refs_by_id = await self._fetch_subject_refs(
                     conn, [r["decision_id"] for r in rows]
                 )
-            return [
-                CompactDecision(
-                    id=r["decision_id"],
-                    domain=r["domain"],
-                    tier=r["tier"],
-                    status=r["status"],
-                    outcome_truncated=r["outcome_truncated"],
-                    subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+            next_cursor = (
+                encode_cursor(
+                    sort=sort,
+                    order=order,
+                    value=rows[-1]["_sort_value"],
+                    tiebreaker=str(rows[-1]["decision_id"]),
                 )
-                for r in rows
-            ]
+                if has_more and rows
+                else None
+            )
+            return Page(
+                items=[
+                    CompactDecision(
+                        id=r["decision_id"],
+                        domain=r["domain"],
+                        tier=r["tier"],
+                        status=r["status"],
+                        outcome_truncated=r["outcome_truncated"],
+                        subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                    )
+                    for r in rows
+                ],
+                next_cursor=next_cursor,
+            )
 
         sql = (
-            f"SELECT d.* FROM {schema}.decisions d WHERE {where_sql} "
-            "ORDER BY d.recorded_at DESC, d.decision_id ASC LIMIT %(limit)s"
+            f"SELECT d.*, {_sort_expr} AS _sort_value FROM {schema}.decisions d{join_sql} "
+            f"WHERE {where_sql} {order_sql} LIMIT %(limit)s"
         )
         async with self._read_conn() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
-            return await self._hydrate_decisions(conn, rows)
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            decisions = await self._hydrate_decisions(conn, rows)
+        next_cursor = (
+            encode_cursor(
+                sort=sort,
+                order=order,
+                value=rows[-1]["_sort_value"],
+                tiebreaker=str(rows[-1]["decision_id"]),
+            )
+            if has_more and rows
+            else None
+        )
+        return Page(items=decisions, next_cursor=next_cursor)
+
+    async def relevant_count(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        expiring_before: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+    ) -> int:
+        where_sql, params = self._relevant_where(
+            domains=domains,
+            status=status,
+            tier=tier,
+            subject=subject,
+            evidence=evidence,
+            as_of=as_of,
+            expiring_before=expiring_before,
+            text=text,
+            include_archived=include_archived,
+        )
+        sql = f"SELECT COUNT(*) AS n FROM {self._schema}.decisions d WHERE {where_sql}"
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            row = await cur.fetchone()
+        return int(row["n"]) if row is not None else 0
 
     async def history(self, decision_id: UUID) -> HistoryRecord:
         schema = self._schema
@@ -946,11 +1166,34 @@ class PostgresStore:
         actions: Sequence[str] | None = None,
         actor: Actor | None = None,
         limit: int = 500,
+        after_id: int | None = None,
     ) -> list[tuple[Transition, CompactDecision]]:
         schema = self._schema
         conditions = []
         params: dict[str, Any] = {"compact_chars": _DEFAULT_COMPACT_CHARS, "limit": limit}
-        if since is not None:
+        if after_id is not None:
+            # `t.transition_id < after_id` alone is not a valid tiebreaker:
+            # Postgres's `now()` (the `at` default) is transaction *start*
+            # time, so two overlapping transactions can commit in an order
+            # that disagrees with which one started, and therefore with
+            # which one got the lower `transition_id`. A row whose `at` is
+            # earlier than the boundary row's sorts *after* it under this
+            # feed's own `ORDER BY t.at DESC, t.transition_id DESC` even if
+            # its `transition_id` is higher -- `id < after_id` would then
+            # exclude it forever. `since` is required alongside `after_id`
+            # here to supply that boundary row's own `at`, so the two-clause
+            # form below agrees with the `ORDER BY`.
+            if since is None:
+                msg = (
+                    "changes() requires `since` (the boundary row's `at`) when `after_id` is given"
+                )
+                raise ValueError(msg)
+            conditions.append(
+                "((t.at < %(since)s) OR (t.at = %(since)s AND t.transition_id < %(after_id)s))"
+            )
+            params["since"] = since
+            params["after_id"] = after_id
+        elif since is not None:
             conditions.append("t.at >= %(since)s")
             params["since"] = since
         if actions is not None:
@@ -987,11 +1230,49 @@ class PostgresStore:
             for r in rows
         ]
 
+    def _queue_keyset(self, *, order: str, after: str, params: dict[str, Any]) -> str:
+        """The 'resume after this row' condition for `open_queue()`, mirroring
+        `_relevant_keyset`'s longhand predicate shape. All three queue
+        orderings ascend, so (unlike `_relevant_keyset`) there's only one
+        comparison direction and no tiebreaker-direction mismatch to work
+        around.
+
+        `oldest` and `domain` are genuinely a single leading value plus the
+        `item_id` tiebreaker -- the two-clause predicate below is exact for
+        them. `shakiest`'s `ORDER BY` is a three-column composite (leading
+        COALESCE expression, then `q.proposed_at`, then `q.item_id`), so a
+        cursor that encoded only the leading value and `item_id` would skip
+        rows tied on the leading value whose `proposed_at`/`item_id` orderings
+        disagree (a lower `item_id` but a later `proposed_at` sorts after the
+        cursor position in `ORDER BY` but fails the two-clause predicate) --
+        see docs/superpowers/specs/2026-09-05-binnacle-core-query-additions-design.md
+        §3.2. `shakiest` therefore builds the full three-clause predicate over
+        all three components instead.
+        """
+        value, value2, tiebreaker = decode_cursor(after, sort=order, order="asc")
+        expr = _QUEUE_SORT_EXPRESSIONS[order]
+        params["cursor_value"] = value
+        params["cursor_id"] = tiebreaker
+        if order == "shakiest":
+            params["cursor_proposed_at"] = value2
+            return (
+                f"(({expr} > %(cursor_value)s) "
+                f"OR ({expr} = %(cursor_value)s AND q.proposed_at > %(cursor_proposed_at)s) "
+                f"OR ({expr} = %(cursor_value)s AND q.proposed_at = %(cursor_proposed_at)s "
+                f"AND q.item_id > %(cursor_id)s))"
+            )
+        return (
+            f"(({expr} > %(cursor_value)s) "
+            f"OR ({expr} = %(cursor_value)s AND q.item_id > %(cursor_id)s))"
+        )
+
     async def open_queue(
         self,
         kinds: Sequence[str] | None = None,
         order: Literal["oldest", "shakiest", "domain"] = "oldest",
-    ) -> list[QueueItemView]:
+        limit: int = 50,
+        after: str | None = None,
+    ) -> Page[QueueItemView]:
         schema = self._schema
         conditions = ["NOT q.resolved"]
         params: dict[str, Any] = {}
@@ -1005,16 +1286,23 @@ class PostgresStore:
             "shakiest": "COALESCE(q.confidence, d.confidence, 1.0) ASC, q.proposed_at ASC, q.item_id ASC",
             "domain": "d.domain ASC, q.proposed_at ASC, q.item_id ASC",
         }[order]
+        if after is not None:
+            conditions.append(self._queue_keyset(order=order, after=after, params=params))
+        params["limit"] = limit + 1  # one extra row tells us whether more remain
+        sort_expr = _QUEUE_SORT_EXPRESSIONS[order]
         sql = (
-            "SELECT q.*, d.domain AS d_domain, d.confidence AS d_confidence "
+            f"SELECT q.*, d.domain AS d_domain, d.confidence AS d_confidence, "
+            f"{sort_expr} AS _sort_value "
             f"FROM {schema}.queue q JOIN {schema}.decisions d ON d.decision_id = q.decision_id "
-            f"WHERE {' AND '.join(conditions)} ORDER BY {order_sql}"
+            f"WHERE {' AND '.join(conditions)} ORDER BY {order_sql} LIMIT %(limit)s"
         )
         async with self._read_conn() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
         now = datetime.now(UTC)
-        return [
+        items = [
             QueueItemView(
                 item=_row_to_queue_item(r),
                 domain=r["d_domain"],
@@ -1023,6 +1311,40 @@ class PostgresStore:
             )
             for r in rows
         ]
+        next_cursor = (
+            encode_cursor(
+                sort=order,
+                order="asc",
+                value=rows[-1]["_sort_value"],
+                # `shakiest`'s ORDER BY is a three-column composite; its cursor
+                # must carry `proposed_at` too, or replaying it would skip
+                # rows tied on the leading value (see `_queue_keyset`). The
+                # other two orderings are single-key plus `item_id`, so they
+                # leave `value2` at its default (`None`).
+                value2=rows[-1]["proposed_at"] if order == "shakiest" else None,
+                tiebreaker=str(rows[-1]["item_id"]),
+            )
+            if has_more and rows
+            else None
+        )
+        return Page(items=items, next_cursor=next_cursor)
+
+    async def queue_summary(self, domains: Sequence[str] | None = None) -> dict[str, int]:
+        schema = self._schema
+        conditions = ["NOT q.resolved"]
+        params: dict[str, Any] = {}
+        if domains is not None:
+            conditions.append("d.domain = ANY(%(domains)s)")
+            params["domains"] = list(domains)
+        sql = (
+            f"SELECT q.kind, COUNT(*) AS n FROM {schema}.queue q "
+            f"JOIN {schema}.decisions d ON d.decision_id = q.decision_id "
+            f"WHERE {' AND '.join(conditions)} GROUP BY q.kind"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+        return {r["kind"]: int(r["n"]) for r in rows}
 
     async def by_source(self, source: str, **filters: Any) -> list[CompactDecision]:
         status = filters.pop("status", None)

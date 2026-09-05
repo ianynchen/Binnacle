@@ -68,3 +68,20 @@ class InvalidResolution(BinnacleError):
     state-related illegality (wrong status, wrong item kind, a cycle) -- this
     is pure caller argument misuse, decidable before any row is even locked.
     """
+
+
+class InvalidCursor(BinnacleError):
+    """A pagination cursor is malformed, or was minted under a different
+    (sort, order) than the query replaying it. Refused rather than honored:
+    silently paging under the wrong ordering returns wrong rows with no
+    visible symptom."""
+
+
+class InvalidSort(BinnacleError):
+    """A `sort` value outside a query's closed set of orderings was
+    requested. Distinct from `InvalidCursor` (a malformed or mismatched
+    *cursor*): this is a bad ordering key on the call itself, decidable
+    before any cursor is even involved -- e.g. a value that bypassed type
+    checking (a REST layer deserializing an untyped request body) and would
+    otherwise reach a `dict` keyed by the closed sort set and raise a bare
+    `KeyError`."""

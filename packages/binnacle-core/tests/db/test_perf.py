@@ -23,6 +23,7 @@ already has dedicated coverage in tests/db/test_lifecycle.py.
 for the measured wall-clock rationale.
 """
 
+import json
 import math
 import time
 import uuid
@@ -61,6 +62,10 @@ _TARGET_SECONDS = {
     "queue read (FR-6.4)": 0.200,
     "changes feed (FR-6.5)": 0.200,
     "promotion (copy + edges + transitions)": 0.500,
+    "relevant_count": 0.200,
+    "queue_summary": 0.100,
+    "domain_summary": 0.100,
+    "relevant sort=last_touched_at": 0.200,
 }
 
 # Realistic short-term status mix for the bulk of the seeded decisions
@@ -336,6 +341,35 @@ class TestSeededPerf:
                     lambda: bn.promote(next(promote_items), actor=HUMAN), N_PROMOTION_TARGETS
                 )
             )
+
+            results["relevant_count"] = _p95(
+                await _measure(lambda: bn.relevant_count(domains=["perf"]), ITERATIONS)
+            )
+
+            results["queue_summary"] = _p95(await _measure(lambda: bn.queue_summary(), ITERATIONS))
+
+            results["domain_summary"] = _p95(
+                await _measure(lambda: bn.domain_summary(), ITERATIONS)
+            )
+
+            # `last_touched_at` is the interesting sort key: it's derived via a
+            # `LEFT JOIN LATERAL` computing `MAX(transitions.at)` per decision
+            # (the other three sort keys read a stored column directly), so
+            # this is the one row here where the JOIN LATERAL's own cost is
+            # actually on the clock.
+            results["relevant sort=last_touched_at"] = _p95(
+                await _measure(
+                    lambda: bn.relevant(sort="last_touched_at", order="asc", limit=50), ITERATIONS
+                )
+            )
+
+            # Export baseline (binnacle-router spec, "should /export stream?")
+            # -- a loose smoke bound, not an NFR-7 target: the printed number
+            # is the deliverable, not the assertion.
+            started = time.perf_counter()
+            bundle = await bn.export()
+            export_elapsed = time.perf_counter() - started
+            export_size_mb = len(json.dumps(bundle).encode()) / 1_000_000
         finally:
             await store.aclose()
             await bn.aclose()
@@ -351,5 +385,10 @@ class TestSeededPerf:
             if measured >= bound:
                 failures.append(name)
         print("\n".join(report_lines))
+        print(
+            f"\nNFR-7 export baseline: {export_size_mb:.1f} MB in {export_elapsed:.2f}s "
+            "at design scale"
+        )
+        assert export_size_mb < 500, "export bundle far larger than the design scale implies"
 
         assert not failures, f"NFR-7 targets exceeded ({CI_MULTIPLIER}x bound): {failures}"

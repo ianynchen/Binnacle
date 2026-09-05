@@ -226,11 +226,31 @@ Consumer → capability map (each row traceable to the FRs below):
 - **FR-6.1 Relevance:** decisions by domain list (default: all domains — cross-domain
   reads are the norm), status filter (default: current), tier, and subject: the
   relevance query for subject X returns decisions whose subject refs include X **or**
-  that are unscoped, within the chosen domains. As-of temporal filtering honors
-  `valid_from/until`. An optional lexical text filter (substring/keyword over
+  that are unscoped, within the chosen domains. An optional `evidence` filter narrows
+  to decisions whose evidence refs include an exact `(kind, identifier)` match —
+  deliberately without `subject`'s "or unscoped" fallback, since evidence is a
+  citation, not a scope. An optional `expiring_before` filter narrows to decisions
+  whose `valid_until` is before the given time, excluding decisions with no
+  `valid_until` (an unbounded decision is never "expiring"). As-of temporal filtering
+  honors `valid_from/until`. An optional lexical text filter (substring/keyword over
   scenario/outcome/reasoning) narrows results without invoking semantic search.
   With no `as_of`, "now" is assumed: decisions whose `valid_until` has passed are
-  excluded from current-status reads by default.
+  excluded from current-status reads by default. Results are orderable by `sort`
+  (`decided_at`, `recorded_at` (default), `last_touched_at` — the most recent
+  transition, or `valid_until`) and `order` (`asc`/`desc`, default `desc`).
+  `sort="valid_until"` also **filters**, independently of `expiring_before`:
+  decisions with no `valid_until` have no position in an expiry ordering, so
+  they are excluded from the results (not merely sorted last) — the same
+  "an unbounded decision is never expiring" rule as `expiring_before`, applied
+  because a caller sorted by expiry rather than because one was requested.
+  This means `relevant_count()` (FR-6.10), which takes no `sort`, does not
+  agree with a `sort="valid_until"` page's exact count — see its own
+  docstring for the workaround. Results are
+  returned as a keyset-paginated `Page` (FR-6.10's aggregate calls answer "how many"
+  separately — a `Page` carries no total): pass a page's opaque `next_cursor` back as
+  `after` to fetch the next page. A cursor is scoped to the `(sort, order)` it was
+  minted under; replaying it under a different ordering raises `InvalidCursor` rather
+  than silently returning wrong rows.
 - **FR-6.2 History:** a decision's full record — content, transitions, relationships,
   predecessor/successor chains — including superseded, declined, and discarded
   entries when explicitly requested.
@@ -238,10 +258,20 @@ Consumer → capability map (each row traceable to the FRs below):
   decisions similar to a stated question, across both tiers and all domains by
   default, including superseded/`not_promoted` history — how thinking evolved is part
   of the answer.
-- **FR-6.4** Queue reads per FR-4.3.
+- **FR-6.4** Queue reads per FR-4.3, returned as a keyset-paginated `Page`
+  (FR-6.1's cursor contract applies, scoped to the read's `order`).
 - **FR-6.5 Changes feed / audit view:** transitions queryable by time window, action
   kind, and actor — serving both "what was decided or promoted since T?" (a human
-  catching up, an agent rejoining work) and "everything actor A did" (audit).
+  catching up, an agent rejoining work) and "everything actor A did" (audit). An
+  optional `after_id` (a `transition_id`) resumes pagination past a specific
+  transition — not merely a timestamp — and MUST be paired with `since` set to
+  that same transition's `at`: because `at` defaults to `now()` (transaction
+  *start* time), two overlapping transactions can commit in an order that
+  disagrees with which one started, so `transition_id` and `at` can sort in
+  opposite directions for two rows, and `after_id` alone cannot tell such a row
+  from one already seen. This feed still returns a bare list, not a `Page`
+  (unlike FR-6.1/6.4) — `since`/`after_id` are plain caller-supplied values,
+  not an opaque store-minted cursor.
 - **FR-6.6 Export:** any filtered decision set (with transitions and relationships)
   exportable as JSON for portability and inspection: decisions with their refs,
   links, transitions, plus the domains registry (embeddings excluded — derived,
@@ -258,6 +288,18 @@ Consumer → capability map (each row traceable to the FRs below):
   short-term `current` decisions older than T with no promotion recommendation;
   decisions lacking embeddings (the backfill backlog); hybrid-shortlist pairs for
   relationship suggestion. These serve FR-7.2 and run within NFR-7 targets.
+- **FR-6.10 Aggregates and counts.** Three read-only aggregate calls answer "how
+  many", which a paginated read alone answers only by walking every page:
+  `relevant_count()` mirrors `relevant()`'s filters (domains, subject, evidence,
+  status, tier, as-of, `expiring_before`, text) and returns the total matching row
+  count; `queue_summary(domains=None)` returns open queue-item counts by kind,
+  optionally restricted to `domains`; `domain_summary()` returns every registered
+  domain paired with its decision count, including domains with zero decisions.
+  `relevant_count()` is deliberately a separate call rather than a field folded into
+  `Page`, for two reasons: a `COUNT(*)` costs real work most paginated fetches never
+  need, and the count is not a figure consistent with any one page in hand — it can
+  drift the moment another writer records or archives a decision concurrently, so it
+  is offered honestly as its own call rather than implied to match the page beside it.
 
 ### FR-7 Assist layer — LLM suggests, mechanism decides, humans gate
 - **FR-7.1** Binnacle core NEVER calls an LLM (sextant DR-2 inherited). It defines
@@ -324,15 +366,24 @@ Consumer → capability map (each row traceable to the FRs below):
   100,000 transitions, measured store-side on the target host (excluding any
   `Embedder`/`Suggester` port latency, which belongs to the fulfilling service):
 
-  | Operation | Target (p95) |
-  |---|---|
-  | Record a decision | < 250 ms (never blocks on embedding — see below) |
-  | Relevance query (FR-6.1) | < 200 ms |
-  | Single-decision history (FR-6.2) | < 100 ms |
-  | Precedent search, store-side (FR-6.3) | < 500 ms |
-  | Queue read (FR-6.4) | < 200 ms |
-  | Changes feed (FR-6.5) | < 200 ms |
-  | Promotion (copy + edges + transitions) | < 500 ms |
+  | Operation | Target (p95) | Measured (design scale)* |
+  |---|---|---|
+  | Record a decision | < 250 ms (never blocks on embedding — see below) | — |
+  | Relevance query (FR-6.1) | < 200 ms | — |
+  | Single-decision history (FR-6.2) | < 100 ms | — |
+  | Precedent search, store-side (FR-6.3) | < 500 ms | — |
+  | Queue read (FR-6.4) | < 200 ms | — |
+  | Changes feed (FR-6.5) | < 200 ms | — |
+  | Promotion (copy + edges + transitions) | < 500 ms | — |
+  | `relevant_count()` (FR-6.10) | < 200 ms | 0.0013 s |
+  | `queue_summary()` (FR-6.10) | < 100 ms | 0.0008 s |
+  | `domain_summary()` (FR-6.10) | < 100 ms | 0.0019 s |
+  | `relevant(sort="last_touched_at")` (FR-6.1) | < 200 ms | 0.0261 s |
+
+  \* Measured by the seeded perf test (`tests/db/test_perf.py`) at NFR-7's design
+  scale (10,000 decisions / 100,000 transitions); per §5.4, this bounds only that
+  configuration. Not (yet) recorded in this table for the pre-existing rows above —
+  those figures existed only as the test run's own printed output before this task.
 
   **Write/embed decoupling:** recording completes without calling the `Embedder`;
   embeddings are backfilled asynchronously (a decision is precedent-searchable
@@ -340,6 +391,12 @@ Consumer → capability map (each row traceable to the FRs below):
   embedding service must never stall decision capture. Targets are verified by a
   seeded perf test in the suite (house pattern: generous CI bound over the
   measured local number).
+
+  **Export baseline (for `binnacle-router`'s streaming decision).** A full,
+  unfiltered export at the same design scale produces 28.5 MB of JSON in 0.61 s
+  (measured by the same seeded perf test). Export carries no NFR-7 target of its
+  own — the number exists because `binnacle-router`'s own spec explicitly defers
+  its "should `/export` stream?" decision to it.
 
 ## 5. Out of Scope
 
