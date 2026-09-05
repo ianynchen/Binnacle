@@ -43,7 +43,15 @@ def decode_cursor(cursor: str, *, sort: str, order: str) -> tuple[datetime | Non
             f"replayed under sort={sort!r} order={order!r}"
         )
     raw_value = payload.get("v")
-    value = datetime.fromisoformat(raw_value) if isinstance(raw_value, str) else None
+    if raw_value is None:
+        value = None
+    elif isinstance(raw_value, str):
+        try:
+            value = datetime.fromisoformat(raw_value)
+        except ValueError as exc:
+            raise InvalidCursor(f"cursor carries an unparseable value: {cursor[:32]!r}") from exc
+    else:
+        raise InvalidCursor(f"cursor carries a non-string value: {cursor[:32]!r}")
     tiebreaker = payload.get("t")
     if not isinstance(tiebreaker, str):
         raise InvalidCursor(f"cursor carries no tiebreaker: {cursor[:32]!r}")

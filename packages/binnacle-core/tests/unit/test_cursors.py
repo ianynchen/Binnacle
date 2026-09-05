@@ -2,6 +2,8 @@
 different ordering -- replaying it silently would return a page computed
 against the wrong sort, a wrongness with no visible symptom."""
 
+import base64
+import json
 import string
 from datetime import UTC, datetime
 
@@ -9,6 +11,14 @@ import pytest
 
 from binnacle_core import InvalidCursor
 from binnacle_core.application.cursors import decode_cursor, encode_cursor
+
+
+def _cursor_with_raw_v(raw_v: object) -> str:
+    """Build a cursor payload by hand, bypassing `encode_cursor`, so `v` can
+    hold a value `encode_cursor` itself could never produce."""
+    payload = {"s": "recorded_at", "o": "desc", "v": raw_v, "t": "abc"}
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
 def test_round_trips_value_and_tiebreaker() -> None:
@@ -37,6 +47,25 @@ def test_rejects_a_cursor_minted_under_a_different_direction() -> None:
 def test_rejects_a_malformed_cursor_rather_than_falling_back_to_page_one() -> None:
     with pytest.raises(InvalidCursor):
         decode_cursor("not-base64-at-all!!", sort="recorded_at", order="desc")
+
+
+def test_rejects_a_cursor_with_a_corrupt_date_string() -> None:
+    """A `v` that is a string but not a valid ISO date must still raise
+    InvalidCursor rather than an uncaught ValueError -- an escaping ValueError
+    surfaces to binnacle-router as an unhandled 500 instead of the controlled
+    error response InvalidCursor is meant to produce."""
+    token = _cursor_with_raw_v("not-a-date")
+    with pytest.raises(InvalidCursor):
+        decode_cursor(token, sort="recorded_at", order="desc")
+
+
+def test_rejects_a_cursor_with_a_non_string_non_null_value() -> None:
+    """A `v` that is neither a string nor null (e.g. a number) must be
+    refused, not silently coerced to None -- silently accepting it would page
+    from the wrong position with no visible symptom."""
+    token = _cursor_with_raw_v(123)
+    with pytest.raises(InvalidCursor):
+        decode_cursor(token, sort="recorded_at", order="desc")
 
 
 def test_cursor_is_url_safe_so_it_survives_a_query_string() -> None:
