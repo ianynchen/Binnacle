@@ -35,7 +35,7 @@ from binnacle_core.adapters.postgres_store import PostgresStore
 from binnacle_core.application.config import BinnacleConfig
 from binnacle_core.application.query import precedent
 from binnacle_core.client import Binnacle
-from binnacle_core.domain.models import Actor, Decision, NewDecision
+from binnacle_core.domain.models import Actor, Decision, NewDecision, Ref
 from tests.helpers import StubEmbedder
 
 HUMAN = Actor(kind="human", id="alice")
@@ -438,6 +438,33 @@ class TestRelevantSorting:
         finally:
             await raw_store.aclose()
             await client.aclose()
+
+
+class TestEvidenceFilter:
+    """Task 8: `evidence` matches a decision's exact evidence-ref
+    (role='evidence') -- deliberately with no 'or unscoped' fallback the way
+    `subject` has (see `_relevant_where`): 'cites session X' is an exact
+    question, and folding in decisions that cite nothing would be nonsense.
+    Exercised at the store level (rather than through `Binnacle`) since it is
+    `PostgresStore._relevant_where` that actually builds the condition, and
+    `store.insert_refs` is the most direct way to attach an evidence ref
+    without going through a full `record()` round trip."""
+
+    async def test_matches_only_decisions_citing_that_evidence(self, store: PostgresStore) -> None:
+        cited = await _seed(store, _decision(), [1.0] * DIM)
+        async with store.transaction() as tx:
+            await store.insert_refs(
+                tx,
+                cited,
+                [Ref(role="evidence", kind="session", identifier="sess-42", note=None)],
+            )
+        await _seed(store, _decision(), [1.0] * DIM)  # cites nothing -- must not match
+
+        page = await store.relevant(evidence=("session", "sess-42"), limit=50)
+
+        assert [d.id for d in page.items] == [cited]
+        assert await store.relevant_count(evidence=("session", "sess-42")) == 1
+        assert await store.relevant_count(evidence=("session", "no-such")) == 0
 
 
 class TestChangesTiebreaker:

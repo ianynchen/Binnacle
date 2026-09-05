@@ -172,6 +172,7 @@ class Binnacle:
         self,
         domains: Sequence[str] | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
@@ -191,6 +192,7 @@ class Binnacle:
         self,
         domains: Sequence[str] | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
@@ -210,6 +212,7 @@ class Binnacle:
         self,
         domains: Sequence[str] | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
@@ -230,6 +233,10 @@ class Binnacle:
         each call site for a literal `projection` (the common case, since it
         has a default); passing a non-literal `projection` value falls back to
         this signature's `Page[CompactDecision] | Page[Decision]`.
+
+        `evidence` is a plain filter -- see `StorePort.relevant`'s docstring
+        for its exact semantics (no "or unscoped" fallback the way `subject`
+        has).
 
         `sort` (default `"recorded_at"`) and `order` (default `"desc"`)
         reproduce the pre-existing ordering unless overridden -- see
@@ -259,6 +266,7 @@ class Binnacle:
                 status=status,
                 tier=tier,
                 subject=subject,
+                evidence=evidence,
                 as_of=as_of,
                 text=text,
                 include_archived=include_archived,
@@ -273,6 +281,7 @@ class Binnacle:
             status=status,
             tier=tier,
             subject=subject,
+            evidence=evidence,
             as_of=as_of,
             text=text,
             include_archived=include_archived,
@@ -287,6 +296,7 @@ class Binnacle:
         self,
         domains: Sequence[str] | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         status: Sequence[str] = ("current",),
         tier: Tier | None = None,
         as_of: datetime | None = None,
@@ -304,6 +314,7 @@ class Binnacle:
             status=status,
             tier=tier,
             subject=subject,
+            evidence=evidence,
             as_of=as_of,
             text=text,
             include_archived=include_archived,

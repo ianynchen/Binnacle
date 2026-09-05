@@ -762,6 +762,7 @@ class PostgresStore:
         status: Sequence[str] | None,
         tier: Tier | None,
         subject: tuple[str, str] | None,
+        evidence: tuple[str, str] | None,
         as_of: datetime | None,
         text: str | None,
         include_archived: bool,
@@ -796,6 +797,15 @@ class PostgresStore:
             )
             params["subj_kind"] = subj_kind
             params["subj_id"] = subj_id
+        if evidence is not None:
+            ev_kind, ev_id = evidence
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM {schema}.refs re "
+                "WHERE re.decision_id = d.decision_id AND re.role = 'evidence' "
+                "AND re.kind = %(ev_kind)s AND re.identifier = %(ev_id)s)"
+            )
+            params["ev_kind"] = ev_kind
+            params["ev_id"] = ev_id
         if text is not None:
             conditions.append(
                 "(d.scenario ILIKE %(text)s OR d.outcome ILIKE %(text)s OR d.reasoning ILIKE %(text)s)"
@@ -848,6 +858,7 @@ class PostgresStore:
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
@@ -868,6 +879,7 @@ class PostgresStore:
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
@@ -887,6 +899,7 @@ class PostgresStore:
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
@@ -904,6 +917,7 @@ class PostgresStore:
             status=status,
             tier=tier,
             subject=subject,
+            evidence=evidence,
             as_of=as_of,
             text=text,
             include_archived=include_archived,
@@ -990,6 +1004,7 @@ class PostgresStore:
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
@@ -999,6 +1014,7 @@ class PostgresStore:
             status=status,
             tier=tier,
             subject=subject,
+            evidence=evidence,
             as_of=as_of,
             text=text,
             include_archived=include_archived,

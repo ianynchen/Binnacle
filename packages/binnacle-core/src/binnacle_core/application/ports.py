@@ -302,6 +302,7 @@ class StorePort(Protocol):
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
@@ -322,6 +323,7 @@ class StorePort(Protocol):
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
@@ -341,6 +343,7 @@ class StorePort(Protocol):
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
@@ -354,10 +357,14 @@ class StorePort(Protocol):
     ) -> Page[CompactDecision] | Page[Decision]:
         """FR-6.1: decisions matching `domains` (default all), `status` (default
         `{"current"}`), `tier`, and `subject` — subject-ref match **or** unscoped
-        (no subject refs at all). `as_of` filters `valid_from`/`valid_until`
-        (default now, excluding decisions whose `valid_until` has passed). `text`
-        is an ILIKE substring filter over scenario/outcome/reasoning.
-        `include_archived` adds `"archived"` to the effective status set.
+        (no subject refs at all). `evidence` matches a decision's exact
+        evidence-ref (role `"evidence"`) — unlike `subject`, there is no
+        "or unscoped" fallback: citing evidence is an exact question, and a
+        decision that cites nothing does not answer it. `as_of` filters
+        `valid_from`/`valid_until` (default now, excluding decisions whose
+        `valid_until` has passed). `text` is an ILIKE substring filter over
+        scenario/outcome/reasoning. `include_archived` adds `"archived"` to the
+        effective status set.
 
         Ordered by `sort` (default `"recorded_at"`) and `order` (default
         `"desc"`), then id ascending as a deterministic tiebreaker. `sort`'s four
@@ -397,6 +404,7 @@ class StorePort(Protocol):
         status: Sequence[str] | None = None,
         tier: Tier | None = None,
         subject: tuple[str, str] | None = None,
+        evidence: tuple[str, str] | None = None,
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
