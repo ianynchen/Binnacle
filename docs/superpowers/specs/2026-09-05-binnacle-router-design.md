@@ -406,10 +406,15 @@ actor-attestation and package-structure decisions (§6, §7) bind both.
   Export is an occasional admin operation ("a backup, or handing the decision
   history to something that will never speak to binnacle", README §7.6), not a
   hot path, so a single response is appropriate. But rather than assert it is
-  small enough, **the seeded perf harness — which already builds the 10k
-  decisions / 100k transitions design scale — reports the export bundle's size
-  and duration**, and that number is recorded alongside NFR-7. Streaming gets
-  revisited when the measurement says so, per §5.4.
+  small enough, the seeded perf harness — which already builds the 10k
+  decisions / 100k transitions design scale — measures it.
+
+  **The measurement (2026-09-05): 28.5 MB in 0.61 s** at that scale, recorded
+  in `binnacle-core`'s NFR-7 table. A single response is comfortably adequate,
+  so streaming stays unjustified. Per §5.4 that verdict is bounded by what it
+  measured: it holds at the design scale NFR-5 commits to ("thousands of
+  *active* decisions, not millions"). The trigger to revisit is that bound
+  ceasing to hold — not a hunch that the payload feels large.
 
   One mitigation available without touching core, if the measurement warrants
   it: serve the already-built bundle through a `StreamingResponse` with
