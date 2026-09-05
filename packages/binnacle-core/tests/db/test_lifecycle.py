@@ -289,7 +289,7 @@ class TestRecordDeclaredSupplements:
         open_items = await store.open_queue(kinds=["link"])
         matching = [
             v
-            for v in open_items
+            for v in open_items.items
             if v.item.decision_id == new.decision_id and v.item.target_id == target.decision_id
         ]
         assert len(matching) == 1
@@ -382,7 +382,7 @@ class TestMatrixRecommend:
         assert [t.reason for t in recommended] == ["first look", "second look"]
 
         open_items = await store.open_queue(kinds=["promote"])
-        matching = [v for v in open_items if v.item.decision_id == d.decision_id]
+        matching = [v for v in open_items.items if v.item.decision_id == d.decision_id]
         assert len(matching) == 1
         assert matching[0].item.item_id == first
 
@@ -998,7 +998,7 @@ class TestMatrixResolveConflict:
         assert await _status(store, a.decision_id) == "current"
         assert await _status(store, b.decision_id) == "superseded"
         open_items = await store.open_queue(kinds=["conflict"])
-        assert any(v.item.item_id == item_id for v in open_items)
+        assert any(v.item.item_id == item_id for v in open_items.items)
 
     async def test_non_human_refused(self, engine: LifecycleEngine, store: PostgresStore) -> None:
         a = await reach(engine, store, "short_term", "current")

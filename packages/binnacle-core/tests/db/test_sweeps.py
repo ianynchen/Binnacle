@@ -271,7 +271,7 @@ class TestDiscoverCursor:
         # The whole transaction (enqueue + mark_discovered) rolled back: the
         # cursor didn't move, and the partial enqueue didn't stick either.
         assert new in {i for i in await store.undiscovered(100)}
-        assert await store.open_queue(kinds=["supersede"]) == []
+        assert (await store.open_queue(kinds=["supersede"])).items == []
 
         # A fresh sweep (a fresh Suggester call -- the crashed one is done)
         # resumes from exactly where the dead one left off.
@@ -338,7 +338,7 @@ class TestDiscoverCursor:
         assert second.suggestions_deduped == 1
         assert await store.undiscovered(100) == []
         open_items = await store.open_queue(kinds=["supersede"])
-        assert len([i for i in open_items if i.item.decision_id == new]) == 1
+        assert len([i for i in open_items.items if i.item.decision_id == new]) == 1
 
 
 class TestDiscoverCap:
@@ -424,8 +424,8 @@ class TestDiscoverConflicts:
 
         assert summary.suggestions_enqueued == 1
         open_items = await store.open_queue(kinds=["conflict"])
-        assert len(open_items) == 1
-        item = open_items[0].item
+        assert len(open_items.items) == 1
+        item = open_items.items[0].item
         assert item.decision_id == new
         assert item.target_id == old
         assert item.proposed_by == ENGINE_ACTOR
@@ -475,7 +475,7 @@ class TestDiscoverConflicts:
         assert second.suggestions_deduped == 1
         assert await store.undiscovered(100) == []
         open_items = await store.open_queue(kinds=["conflict"])
-        assert len([i for i in open_items if i.item.decision_id == new]) == 1
+        assert len([i for i in open_items.items if i.item.decision_id == new]) == 1
 
     async def test_conflict_requires_both_sides_current(
         self, store: PostgresStore, embedder: StubEmbedder, engine: LifecycleEngine
@@ -512,7 +512,7 @@ class TestDiscoverConflicts:
 
         assert summary.suggestions_enqueued == 0
         assert suggester.classify_pairs_calls == []
-        assert await store.open_queue(kinds=["conflict"]) == []
+        assert (await store.open_queue(kinds=["conflict"])).items == []
         newer_history = await store.history(newer)
         assert newer_history.decision.status == "current"
 
@@ -551,8 +551,8 @@ class TestDiscoverConflicts:
         # regression to the un-tie-broken guard would enqueue both.
         assert summary.suggestions_enqueued == 1
         open_items = await store.open_queue(kinds=["conflict"])
-        assert len(open_items) == 1
-        item = open_items[0].item
+        assert len(open_items.items) == 1
+        item = open_items.items[0].item
         assert {item.decision_id, item.target_id} == {x, y}
 
 
@@ -620,7 +620,7 @@ class TestPromotionAssessment:
 
         assert summary.promotions_recommended == 1
         open_items = await store.open_queue(kinds=["promote"])
-        matching = [i for i in open_items if i.item.decision_id == aging_id]
+        matching = [i for i in open_items.items if i.item.decision_id == aging_id]
         assert len(matching) == 1
         assert matching[0].item.proposed_by == ENGINE_ACTOR
 
@@ -654,7 +654,7 @@ class TestPromotionAssessment:
         )
 
         assert summary.promotions_recommended == 0
-        assert await store.open_queue(kinds=["promote"]) == []
+        assert (await store.open_queue(kinds=["promote"])).items == []
 
 
 class TestArchiveStale:
@@ -799,7 +799,9 @@ class TestClientWiring:
             assert discover_summary.suggestions_enqueued == 1
 
             open_items = await client.queue(kinds=["supersede"])
-            assert any(v.item.decision_id == new and v.item.target_id == old for v in open_items)
+            assert any(
+                v.item.decision_id == new and v.item.target_id == old for v in open_items.items
+            )
         finally:
             await raw_store.aclose()
             await client.aclose()

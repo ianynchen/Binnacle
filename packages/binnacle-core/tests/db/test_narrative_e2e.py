@@ -208,7 +208,9 @@ class TestLifeOfADecision:
         assert len(engine_recommended) == 1
         assert engine_recommended[0].actor == ENGINE
         open_promotes = await bn.queue(kinds=["promote"])
-        pool_item = next(v for v in open_promotes if v.item.decision_id == pool_sizing.decision_id)
+        pool_item = next(
+            v for v in open_promotes.items if v.item.decision_id == pool_sizing.decision_id
+        )
         assert pool_item.item.proposed_by == ENGINE
 
         # -- 7.3 The gate -----------------------------------------------------
@@ -248,7 +250,7 @@ class TestLifeOfADecision:
         assert promoted_t.actor == HUMAN
         assert promoted_t.payload == {"refined": True, "target": str(refined.decision_id)}
         queue_after_gate = await bn.queue(kinds=["promote"])
-        assert not any(v.item.decision_id == batching.decision_id for v in queue_after_gate)
+        assert not any(v.item.decision_id == batching.decision_id for v in queue_after_gate.items)
         # FR-4.6's generalization made it through: the refined policy is
         # unscoped, so a subject dossier for the ORIGINAL component still
         # surfaces it (FR-6.1: subject match OR unscoped).

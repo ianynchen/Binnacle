@@ -59,11 +59,26 @@ def test_rejects_a_cursor_with_a_corrupt_date_string() -> None:
         decode_cursor(token, sort="recorded_at", order="desc")
 
 
-def test_rejects_a_cursor_with_a_non_string_non_null_value() -> None:
-    """A `v` that is neither a string nor null (e.g. a number) must be
-    refused, not silently coerced to None -- silently accepting it would page
-    from the wrong position with no visible symptom."""
-    token = _cursor_with_raw_v(123)
+def test_round_trips_a_numeric_sort_value() -> None:
+    """`queue()`'s `shakiest` ordering leads with a numeric (confidence)
+    expression rather than a datetime -- the codec must round-trip that too."""
+    token = encode_cursor(sort="shakiest", order="asc", value=0.42, tiebreaker="7")
+    assert decode_cursor(token, sort="shakiest", order="asc") == (0.42, "7")
+
+
+def test_rejects_a_cursor_with_a_non_scalar_value() -> None:
+    """A `v` that is neither a string, a number, nor null (e.g. a JSON array)
+    must be refused, not silently coerced to None -- silently accepting it
+    would page from the wrong position with no visible symptom."""
+    token = _cursor_with_raw_v([1, 2])
+    with pytest.raises(InvalidCursor):
+        decode_cursor(token, sort="recorded_at", order="desc")
+
+
+def test_rejects_a_cursor_with_a_boolean_value() -> None:
+    """`bool` is a subclass of `int` in Python -- a naive numeric check would
+    silently accept a JSON `true`/`false` as `1.0`/`0.0`."""
+    token = _cursor_with_raw_v(True)
     with pytest.raises(InvalidCursor):
         decode_cursor(token, sort="recorded_at", order="desc")
 

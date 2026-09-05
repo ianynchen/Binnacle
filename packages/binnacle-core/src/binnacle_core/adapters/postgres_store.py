@@ -97,6 +97,14 @@ _SORT_EXPRESSIONS: dict[str, str] = {
     "last_touched_at": "lt.last_touched_at",
 }
 
+# `open_queue()`'s three closed orderings, mapped to their leading sort
+# expression (the value the keyset cursor carries).
+_QUEUE_SORT_EXPRESSIONS: dict[str, str] = {
+    "oldest": "q.proposed_at",
+    "shakiest": "COALESCE(q.confidence, d.confidence, 1.0)",
+    "domain": "d.domain",
+}
+
 # FR-6.6 export document schema version (the bundle's own JSON shape, distinct
 # from `decisions.schema_version`).
 _EXPORT_SCHEMA_VERSION = 1
@@ -1136,11 +1144,28 @@ class PostgresStore:
             for r in rows
         ]
 
+    def _queue_keyset(self, *, order: str, after: str, params: dict[str, Any]) -> str:
+        """The 'resume after this row' condition for `open_queue()`, mirroring
+        `_relevant_keyset`'s longhand predicate shape. All three queue
+        orderings ascend, so (unlike `_relevant_keyset`) there's only one
+        comparison direction and no tiebreaker-direction mismatch to work
+        around."""
+        value, tiebreaker = decode_cursor(after, sort=order, order="asc")
+        expr = _QUEUE_SORT_EXPRESSIONS[order]
+        params["cursor_value"] = value
+        params["cursor_id"] = tiebreaker
+        return (
+            f"(({expr} > %(cursor_value)s) "
+            f"OR ({expr} = %(cursor_value)s AND q.item_id > %(cursor_id)s))"
+        )
+
     async def open_queue(
         self,
         kinds: Sequence[str] | None = None,
         order: Literal["oldest", "shakiest", "domain"] = "oldest",
-    ) -> list[QueueItemView]:
+        limit: int = 50,
+        after: str | None = None,
+    ) -> Page[QueueItemView]:
         schema = self._schema
         conditions = ["NOT q.resolved"]
         params: dict[str, Any] = {}
@@ -1154,16 +1179,23 @@ class PostgresStore:
             "shakiest": "COALESCE(q.confidence, d.confidence, 1.0) ASC, q.proposed_at ASC, q.item_id ASC",
             "domain": "d.domain ASC, q.proposed_at ASC, q.item_id ASC",
         }[order]
+        if after is not None:
+            conditions.append(self._queue_keyset(order=order, after=after, params=params))
+        params["limit"] = limit + 1  # one extra row tells us whether more remain
+        sort_expr = _QUEUE_SORT_EXPRESSIONS[order]
         sql = (
-            "SELECT q.*, d.domain AS d_domain, d.confidence AS d_confidence "
+            f"SELECT q.*, d.domain AS d_domain, d.confidence AS d_confidence, "
+            f"{sort_expr} AS _sort_value "
             f"FROM {schema}.queue q JOIN {schema}.decisions d ON d.decision_id = q.decision_id "
-            f"WHERE {' AND '.join(conditions)} ORDER BY {order_sql}"
+            f"WHERE {' AND '.join(conditions)} ORDER BY {order_sql} LIMIT %(limit)s"
         )
         async with self._read_conn() as conn:
             cur = await conn.execute(sql, params)
             rows = await cur.fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
         now = datetime.now(UTC)
-        return [
+        items = [
             QueueItemView(
                 item=_row_to_queue_item(r),
                 domain=r["d_domain"],
@@ -1172,6 +1204,17 @@ class PostgresStore:
             )
             for r in rows
         ]
+        next_cursor = (
+            encode_cursor(
+                sort=order,
+                order="asc",
+                value=rows[-1]["_sort_value"],
+                tiebreaker=str(rows[-1]["item_id"]),
+            )
+            if has_more and rows
+            else None
+        )
+        return Page(items=items, next_cursor=next_cursor)
 
     async def by_source(self, source: str, **filters: Any) -> list[CompactDecision]:
         status = filters.pop("status", None)

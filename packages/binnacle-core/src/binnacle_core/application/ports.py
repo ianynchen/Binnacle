@@ -433,12 +433,26 @@ class StorePort(Protocol):
         self,
         kinds: Sequence[str] | None = None,
         order: Literal["oldest", "shakiest", "domain"] = "oldest",
-    ) -> list[QueueItemView]:
+        limit: int = 50,
+        after: str | None = None,
+    ) -> Page[QueueItemView]:
         """FR-4.3/6.4: open (unresolved) queue items, optionally restricted to
         `kinds`. `oldest` sorts by `proposed_at` ascending; `domain` by the
         subject decision's domain; `shakiest` by confidence ascending — the
         item's own `confidence`, else the subject decision's `confidence`, else
-        `1.0` (sorted last)."""
+        `1.0` (sorted last). All three orderings tiebreak on `item_id` ascending.
+
+        Pagination: returns a `Page` carrying `items` plus an opaque
+        `next_cursor` (`None` on the last page) — pass that cursor back as
+        `after` to fetch the next page. The cursor's `sort` field is the
+        `order` name itself, so replaying a cursor under a different `order`
+        is refused the same way `relevant()` refuses a cursor replayed under a
+        different `sort`.
+
+        Raises:
+            InvalidCursor: `after` is malformed, or was minted under a
+                different `order` than this call's.
+        """
         ...
 
     async def by_source(self, source: str, **filters: Any) -> list[CompactDecision]:

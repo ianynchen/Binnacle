@@ -145,3 +145,31 @@ class TestRelevantPagination:
                 break
         assert cursor is None, "pagination did not terminate"
         assert len(seen) == len(set(seen)), "a decision appeared on two pages"
+
+
+class TestQueuePagination:
+    async def test_paging_the_queue_yields_each_item_once(self, bn: Binnacle) -> None:
+        for i in range(11):
+            source = await bn.record(_nd(scenario=f"decision {i}"), actor=AGENT)
+            await bn.recommend(source.decision_id, actor=AGENT, reason="ready")
+
+        seen: list[int] = []
+        cursor: str | None = None
+        for _ in range(50):  # generous bound; asserts termination too
+            page = await bn.queue(limit=2, after=cursor)
+            seen.extend(v.item.item_id for v in page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert cursor is None, "pagination did not terminate"
+        assert len(seen) == len(set(seen)), "a queue item appeared on two pages"
+
+    async def test_a_queue_cursor_is_refused_under_a_different_order(self, bn: Binnacle) -> None:
+        for i in range(3):
+            source = await bn.record(_nd(scenario=f"decision {i}"), actor=AGENT)
+            await bn.recommend(source.decision_id, actor=AGENT, reason="ready")
+
+        page = await bn.queue(order="oldest", limit=1)
+        assert page.next_cursor is not None
+        with pytest.raises(InvalidCursor):
+            await bn.queue(order="shakiest", after=page.next_cursor)

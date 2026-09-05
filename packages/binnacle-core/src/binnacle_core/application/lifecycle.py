@@ -731,7 +731,7 @@ class LifecycleEngine:
         ran); callers fall back to `resolve_item` alone in that case, which still
         raises the correct `ItemNotFound`/`ItemAlreadyResolved`.
         """
-        for view in await self._store.open_queue():
+        for view in (await self._store.open_queue()).items:
             if view.item.item_id == item_id:
                 return view
         return None

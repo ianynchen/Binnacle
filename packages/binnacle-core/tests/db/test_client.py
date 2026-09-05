@@ -248,7 +248,7 @@ class TestQueryDelegation:
         source = await bn.record(_nd(), actor=AGENT)
         await bn.recommend(source.decision_id, actor=AGENT, reason="ready")
         open_items = await bn.queue(kinds=["promote"])
-        assert any(v.item.decision_id == source.decision_id for v in open_items)
+        assert any(v.item.decision_id == source.decision_id for v in open_items.items)
 
     async def test_get_many_and_by_source(self, bn: Binnacle) -> None:
         d1 = await bn.record(_nd(source="svc-a"), actor=AGENT)

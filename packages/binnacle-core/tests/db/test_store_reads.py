@@ -547,11 +547,13 @@ class TestOpenQueue:
         assert item_default_last is not None
 
         views = await store.open_queue(order="shakiest")
-        order = [v.item.item_id for v in views]
+        order = [v.item.item_id for v in views.items]
         assert order.index(item_explicit) < order.index(item_falls_back_to_decision)
         assert order.index(item_falls_back_to_decision) < order.index(item_default_last)
 
-        fallback_view = next(v for v in views if v.item.item_id == item_falls_back_to_decision)
+        fallback_view = next(
+            v for v in views.items if v.item.item_id == item_falls_back_to_decision
+        )
         assert fallback_view.decision_confidence == 0.8
 
     async def test_oldest_orders_by_proposed_at(
@@ -564,7 +566,7 @@ class TestOpenQueue:
                 tx, "promote", narrative.other_component, None, HUMAN, "r", 0.5
             )
         views = await store.open_queue(order="oldest")
-        assert [v.item.item_id for v in views] == [first, second]
+        assert [v.item.item_id for v in views.items] == [first, second]
 
     async def test_kinds_filter(self, store: PostgresStore, narrative: Narrative) -> None:
         async with store.transaction() as tx:
@@ -575,7 +577,7 @@ class TestOpenQueue:
                 tx, "link", narrative.general, narrative.other_component, ENGINE, "r", 0.5
             )
         views = await store.open_queue(kinds=["promote"])
-        assert [v.item.item_id for v in views] == [promote_item]
+        assert [v.item.item_id for v in views.items] == [promote_item]
 
 
 class TestBySource:

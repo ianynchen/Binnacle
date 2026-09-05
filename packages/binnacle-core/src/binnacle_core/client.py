@@ -338,9 +338,16 @@ class Binnacle:
         self,
         kinds: Sequence[str] | None = None,
         order: Literal["oldest", "shakiest", "domain"] = "oldest",
-    ) -> list[QueueItemView]:
-        """FR-4.3/6.4: open queue items. See `StorePort.open_queue`."""
-        return await self._store.open_queue(kinds=kinds, order=order)
+        limit: int = 50,
+        after: str | None = None,
+    ) -> Page[QueueItemView]:
+        """FR-4.3/6.4: open queue items. See `StorePort.open_queue`.
+
+        Raises:
+            InvalidCursor: `after` is malformed, or was minted under a
+                different `order` than this call's.
+        """
+        return await self._store.open_queue(kinds=kinds, order=order, limit=limit, after=after)
 
     async def changes(
         self,

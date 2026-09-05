@@ -14,20 +14,22 @@ from datetime import datetime
 from binnacle_core.domain.errors import InvalidCursor
 
 
-def encode_cursor(*, sort: str, order: str, value: datetime | None, tiebreaker: str) -> str:
+def encode_cursor(*, sort: str, order: str, value: datetime | float | None, tiebreaker: str) -> str:
     """Mint a cursor for the last row of a page. `value` is that row's sort-key
-    value, `tiebreaker` its id (as `str`)."""
+    value, `tiebreaker` its id (as `str`). A `datetime` is serialized via
+    `.isoformat()`; a numeric value (e.g. `queue()`'s `shakiest` confidence
+    ordering) is serialized directly, since JSON already round-trips floats."""
     payload = {
         "s": sort,
         "o": order,
-        "v": value.isoformat() if value is not None else None,
+        "v": value.isoformat() if isinstance(value, datetime) else value,
         "t": tiebreaker,
     }
     raw = json.dumps(payload, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def decode_cursor(cursor: str, *, sort: str, order: str) -> tuple[datetime | None, str]:
+def decode_cursor(cursor: str, *, sort: str, order: str) -> tuple[datetime | float | None, str]:
     """Reverse of `encode_cursor`, refusing a cursor minted under a different
     ordering. Raises `InvalidCursor` on malformed input or a mismatch."""
     padded = cursor + "=" * (-len(cursor) % 4)
@@ -43,6 +45,7 @@ def decode_cursor(cursor: str, *, sort: str, order: str) -> tuple[datetime | Non
             f"replayed under sort={sort!r} order={order!r}"
         )
     raw_value = payload.get("v")
+    value: datetime | float | None
     if raw_value is None:
         value = None
     elif isinstance(raw_value, str):
@@ -50,8 +53,10 @@ def decode_cursor(cursor: str, *, sort: str, order: str) -> tuple[datetime | Non
             value = datetime.fromisoformat(raw_value)
         except ValueError as exc:
             raise InvalidCursor(f"cursor carries an unparseable value: {cursor[:32]!r}") from exc
+    elif isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+        value = float(raw_value)
     else:
-        raise InvalidCursor(f"cursor carries a non-string value: {cursor[:32]!r}")
+        raise InvalidCursor(f"cursor carries an unsupported value: {cursor[:32]!r}")
     tiebreaker = payload.get("t")
     if not isinstance(tiebreaker, str):
         raise InvalidCursor(f"cursor carries no tiebreaker: {cursor[:32]!r}")
