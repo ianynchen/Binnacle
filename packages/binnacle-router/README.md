@@ -165,7 +165,7 @@ client:
 
 ## Known gaps
 
-Two gaps are carried deliberately rather than silently omitted:
+Three gaps are carried deliberately rather than silently omitted:
 
 - **No bulk queue actions.** Every queue resolution operates on exactly
   one `item_id`. Resolving many items is one request per item; there is no
