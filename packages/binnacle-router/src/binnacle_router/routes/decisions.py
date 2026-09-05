@@ -1,0 +1,166 @@
+"""Read-only decision endpoints: direct translations of `Binnacle`'s query
+methods (GUIDELINES §8: no business logic in transport-layer code). Reads are
+unattributed -- none of these take an actor."""
+
+from datetime import datetime
+from typing import Annotated, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Query
+from pydantic import BaseModel, ConfigDict
+
+from binnacle_core import Binnacle, CompactDecision, Decision, HistoryRecord, Page, Tier
+
+SortKey = Literal["decided_at", "recorded_at", "last_touched_at", "valid_until"]
+Order = Literal["asc", "desc"]
+
+
+def _paired(kind: str | None, identifier: str | None, *, name: str) -> tuple[str, str] | None:
+    """Pair a `{name}_kind`/`{name}_identifier` query-parameter pair into the
+    `(kind, identifier)` tuple `relevant()`/`relevant_count()` expect.
+    Supplying only one half is meaningless and would otherwise be silently
+    dropped, widening the query -- so it raises, which Task 3's `ValueError`
+    handler turns into a 422."""
+    if (kind is None) != (identifier is None):
+        msg = f"{name}_kind and {name}_identifier must be supplied together"
+        raise ValueError(msg)
+    return None if kind is None else (kind, identifier)  # type: ignore[return-value]
+
+
+class _FilterFields(BaseModel):
+    """Filters shared by `GET /decisions` and `GET /decisions/count`. A
+    FastAPI query-parameter model cannot share a route with other, bare
+    query parameters (verified by spike: doing so makes FastAPI treat the
+    whole model as one missing scalar param named after it) -- so each
+    endpoint below declares exactly one such model, and `DecisionsQuery`
+    layers its pagination/presentation fields on top of this one rather than
+    duplicating the filter fields."""
+
+    domains: list[str] | None = None
+    subject_kind: str | None = None
+    subject_identifier: str | None = None
+    evidence_kind: str | None = None
+    evidence_identifier: str | None = None
+    status: list[str] = ["current"]
+    tier: Tier | None = None
+    as_of: datetime | None = None
+    expiring_before: datetime | None = None
+    text: str | None = None
+    include_archived: bool = False
+
+
+class DecisionsQuery(_FilterFields):
+    """`GET /decisions`'s full query parameter set: filters plus pagination
+    and presentation."""
+
+    sort: SortKey = "recorded_at"
+    order: Order = "desc"
+    limit: int = 50
+    after: str | None = None
+    projection: Literal["compact", "full"] = "compact"
+
+
+class CountQuery(_FilterFields):
+    """`GET /decisions/count`'s query parameters -- filters only.
+    `extra="forbid"` actively rejects pagination/presentation parameters
+    (`sort`/`order`/`after`/`limit`/`projection`) rather than silently
+    ignoring them -- a count these cannot affect, and FastAPI ignores
+    unknown query parameters by default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BatchGetRequest(BaseModel):
+    ids: list[UUID]
+
+
+def decision_read_router(binnacle: Binnacle) -> APIRouter:
+    router = APIRouter()
+
+    @router.get("/decisions")
+    async def list_decisions(
+        filters: Annotated[DecisionsQuery, Query()],
+    ) -> Page[CompactDecision] | Page[Decision]:
+        subject = _paired(filters.subject_kind, filters.subject_identifier, name="subject")
+        evidence = _paired(filters.evidence_kind, filters.evidence_identifier, name="evidence")
+        # Branching on a literal per call (rather than passing `filters.projection`
+        # straight through) mirrors `Binnacle.relevant()`'s own docstring: with this
+        # many `Optional` parameters, a call site carrying a union-typed `projection`
+        # exceeds mypy's overload-combination limit ("Not all union combinations
+        # were tried"). A literal at each call site resolves to exactly one overload.
+        if filters.projection == "compact":
+            return await binnacle.relevant(
+                domains=filters.domains,
+                subject=subject,
+                evidence=evidence,
+                status=filters.status,
+                tier=filters.tier,
+                as_of=filters.as_of,
+                expiring_before=filters.expiring_before,
+                text=filters.text,
+                projection="compact",
+                sort=filters.sort,
+                order=filters.order,
+                limit=filters.limit,
+                after=filters.after,
+                include_archived=filters.include_archived,
+            )
+        return await binnacle.relevant(
+            domains=filters.domains,
+            subject=subject,
+            evidence=evidence,
+            status=filters.status,
+            tier=filters.tier,
+            as_of=filters.as_of,
+            expiring_before=filters.expiring_before,
+            text=filters.text,
+            projection="full",
+            sort=filters.sort,
+            order=filters.order,
+            limit=filters.limit,
+            after=filters.after,
+            include_archived=filters.include_archived,
+        )
+
+    @router.get("/decisions/count")
+    async def count_decisions(filters: Annotated[CountQuery, Query()]) -> dict[str, int]:
+        subject = _paired(filters.subject_kind, filters.subject_identifier, name="subject")
+        evidence = _paired(filters.evidence_kind, filters.evidence_identifier, name="evidence")
+        count = await binnacle.relevant_count(
+            domains=filters.domains,
+            subject=subject,
+            evidence=evidence,
+            status=filters.status,
+            tier=filters.tier,
+            as_of=filters.as_of,
+            expiring_before=filters.expiring_before,
+            text=filters.text,
+            include_archived=filters.include_archived,
+        )
+        return {"count": count}
+
+    @router.get("/decisions/by_source")
+    async def decisions_by_source(
+        source: str,
+        status: Annotated[list[str] | None, Query()] = None,
+        tier: Tier | None = None,
+        limit: int | None = None,
+    ) -> list[CompactDecision]:
+        filter_kwargs: dict[str, object] = {}
+        if status is not None:
+            filter_kwargs["status"] = status
+        if tier is not None:
+            filter_kwargs["tier"] = tier
+        if limit is not None:
+            filter_kwargs["limit"] = limit
+        return await binnacle.by_source(source, **filter_kwargs)
+
+    @router.post("/decisions:batch_get")
+    async def batch_get_decisions(body: BatchGetRequest) -> list[Decision]:
+        return await binnacle.get_many(body.ids)
+
+    @router.get("/decisions/{decision_id}/history", response_model=None)
+    async def decision_history(decision_id: UUID) -> HistoryRecord:
+        return await binnacle.history(decision_id)
+
+    return router
