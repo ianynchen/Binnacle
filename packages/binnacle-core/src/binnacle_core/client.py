@@ -249,6 +249,32 @@ class Binnacle:
             compact_chars=None,
         )
 
+    async def relevant_count(
+        self,
+        domains: Sequence[str] | None = None,
+        subject: tuple[str, str] | None = None,
+        status: Sequence[str] = ("current",),
+        tier: Tier | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+    ) -> int:
+        """FR-6.10: the total matching `relevant()`'s filters, for a caller that
+        wants "about N results" alongside a paged read. Deliberately a separate
+        call rather than a field on `Page`: embedding it would charge every page
+        fetch for a COUNT(*) that most fetches do not need. The value drifts as
+        decisions are recorded or archived concurrently -- it is a UI
+        affordance, not a figure consistent with the page in hand."""
+        return await self._store.relevant_count(
+            domains=domains,
+            status=status,
+            tier=tier,
+            subject=subject,
+            as_of=as_of,
+            text=text,
+            include_archived=include_archived,
+        )
+
     async def history(self, decision_id: UUID) -> HistoryRecord:
         """FR-6.2: a decision's full record. See `StorePort.history`."""
         return await self._store.history(decision_id)

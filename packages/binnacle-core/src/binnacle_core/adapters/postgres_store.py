@@ -875,6 +875,32 @@ class PostgresStore:
             rows = await cur.fetchall()
             return await self._hydrate_decisions(conn, rows)
 
+    async def relevant_count(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+    ) -> int:
+        where_sql, params = self._relevant_where(
+            domains=domains,
+            status=status,
+            tier=tier,
+            subject=subject,
+            as_of=as_of,
+            text=text,
+            include_archived=include_archived,
+        )
+        sql = f"SELECT COUNT(*) AS n FROM {self._schema}.decisions d WHERE {where_sql}"
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            row = await cur.fetchone()
+        return int(row["n"]) if row is not None else 0
+
     async def history(self, decision_id: UUID) -> HistoryRecord:
         schema = self._schema
         async with self._read_conn() as conn:

@@ -357,6 +357,22 @@ class StorePort(Protocol):
         """
         ...
 
+    async def relevant_count(
+        self,
+        *,
+        domains: Sequence[str] | None = None,
+        status: Sequence[str] | None = None,
+        tier: Tier | None = None,
+        subject: tuple[str, str] | None = None,
+        as_of: datetime | None = None,
+        text: str | None = None,
+        include_archived: bool = False,
+    ) -> int:
+        """FR-6.10: how many decisions match `relevant()`'s filters. Takes no
+        presentation parameters -- sort, cursor, and limit cannot affect a
+        count."""
+        ...
+
     async def history(self, decision_id: UUID) -> HistoryRecord:
         """FR-6.2: the decision's full record — content, refs, transitions (in
         order), every link touching it, both supersession chains (recursive over
