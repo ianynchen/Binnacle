@@ -61,6 +61,7 @@ from binnacle_core.domain.models import (
     CompactDecision,
     Decision,
     DomainRecord,
+    DomainSummary,
     ExportBundle,
     HistoryRecord,
     Link,
@@ -702,6 +703,28 @@ class PostgresStore:
             for r in rows
         ]
 
+    async def domain_summary(self) -> list[DomainSummary]:
+        schema = self._schema
+        sql = (
+            f"SELECT dm.name, dm.description, dm.active, "
+            f"COUNT(d.decision_id) AS decision_count "
+            f"FROM {schema}.domains dm "
+            f"LEFT JOIN {schema}.decisions d ON d.domain = dm.name "
+            "GROUP BY dm.name, dm.description, dm.active ORDER BY dm.name"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql)
+            rows = await cur.fetchall()
+        return [
+            DomainSummary(
+                name=r["name"],
+                description=r["description"],
+                active=r["active"],
+                decision_count=int(r["decision_count"]),
+            )
+            for r in rows
+        ]
+
     async def get_decision(self, decision_id: UUID) -> Decision | None:
         async with self._read_conn() as conn:
             cur = await conn.execute(
@@ -1272,6 +1295,23 @@ class PostgresStore:
             else None
         )
         return Page(items=items, next_cursor=next_cursor)
+
+    async def queue_summary(self, domains: Sequence[str] | None = None) -> dict[str, int]:
+        schema = self._schema
+        conditions = ["NOT q.resolved"]
+        params: dict[str, Any] = {}
+        if domains is not None:
+            conditions.append("d.domain = ANY(%(domains)s)")
+            params["domains"] = list(domains)
+        sql = (
+            f"SELECT q.kind, COUNT(*) AS n FROM {schema}.queue q "
+            f"JOIN {schema}.decisions d ON d.decision_id = q.decision_id "
+            f"WHERE {' AND '.join(conditions)} GROUP BY q.kind"
+        )
+        async with self._read_conn() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+        return {r["kind"]: int(r["n"]) for r in rows}
 
     async def by_source(self, source: str, **filters: Any) -> list[CompactDecision]:
         status = filters.pop("status", None)

@@ -38,6 +38,7 @@ from binnacle_core.domain.models import (
     Decision,
     DiscoverySummary,
     DomainRecord,
+    DomainSummary,
     HistoryRecord,
     NewDecision,
     Page,
@@ -368,6 +369,11 @@ class Binnacle:
         """
         return await self._store.open_queue(kinds=kinds, order=order, limit=limit, after=after)
 
+    async def queue_summary(self, domains: Sequence[str] | None = None) -> dict[str, int]:
+        """FR-6.10: open queue item counts by kind, optionally restricted to
+        `domains`. See `StorePort.queue_summary`."""
+        return await self._store.queue_summary(domains=domains)
+
     async def changes(
         self,
         since: datetime | None = None,
@@ -405,6 +411,11 @@ class Binnacle:
     async def domains(self) -> list[DomainRecord]:
         """FR-2.1: every registered domain. See `StorePort.list_domains`."""
         return await self._store.list_domains()
+
+    async def domain_summary(self) -> list[DomainSummary]:
+        """FR-6.10: every registered domain paired with its decision count,
+        including domains with zero. See `StorePort.domain_summary`."""
+        return await self._store.domain_summary()
 
     async def add_domain(self, name: str, description: str, actor: Actor) -> None:
         """Register a new domain, or re-register (and reactivate) an existing

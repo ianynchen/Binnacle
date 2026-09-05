@@ -19,6 +19,7 @@ from binnacle_core.domain.models import (
     CompactDecision,
     Decision,
     DomainRecord,
+    DomainSummary,
     ExportBundle,
     HistoryRecord,
     LinkKind,
@@ -272,6 +273,14 @@ class StorePort(Protocol):
         query (`Binnacle.domains()`)."""
         ...
 
+    async def domain_summary(self) -> list[DomainSummary]:
+        """FR-6.10: every registered domain paired with its decision count, via
+        a `LEFT JOIN` from `domains` to `decisions` (never a `GROUP BY` over
+        `decisions` alone) so domains with zero decisions still appear, with
+        `decision_count == 0` — the registry-housekeeping use case this method
+        exists for. Name-ordered."""
+        ...
+
     async def get_decision(self, decision_id: UUID) -> Decision | None:
         """Fetch one decision, hydrated with its refs and declared
         supersedes/supplements (FR-6.8). `None` when `decision_id` doesn't exist."""
@@ -471,6 +480,13 @@ class StorePort(Protocol):
             InvalidCursor: `after` is malformed, or was minted under a
                 different `order` than this call's.
         """
+        ...
+
+    async def queue_summary(self, domains: Sequence[str] | None = None) -> dict[str, int]:
+        """FR-6.10: open (unresolved) queue item counts grouped by `kind`,
+        optionally restricted to `domains` (the subject decision's domain).
+        Resolved items are excluded -- a summary that counted them would
+        report the review backlog as permanently growing."""
         ...
 
     async def by_source(self, source: str, **filters: Any) -> list[CompactDecision]:
