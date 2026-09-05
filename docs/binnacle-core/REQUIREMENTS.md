@@ -255,9 +255,14 @@ Consumer → capability map (each row traceable to the FRs below):
 - **FR-6.5 Changes feed / audit view:** transitions queryable by time window, action
   kind, and actor — serving both "what was decided or promoted since T?" (a human
   catching up, an agent rejoining work) and "everything actor A did" (audit). An
-  optional `after_id` (a `transition_id`) tiebreaks pagination past `since` when
-  several transitions share a timestamp. This feed still returns a bare list, not a
-  `Page` (unlike FR-6.1/6.4) — `since`/`after_id` are plain caller-supplied values,
+  optional `after_id` (a `transition_id`) resumes pagination past a specific
+  transition — not merely a timestamp — and MUST be paired with `since` set to
+  that same transition's `at`: because `at` defaults to `now()` (transaction
+  *start* time), two overlapping transactions can commit in an order that
+  disagrees with which one started, so `transition_id` and `at` can sort in
+  opposite directions for two rows, and `after_id` alone cannot tell such a row
+  from one already seen. This feed still returns a bare list, not a `Page`
+  (unlike FR-6.1/6.4) — `since`/`after_id` are plain caller-supplied values,
   not an opaque store-minted cursor.
 - **FR-6.6 Export:** any filtered decision set (with transitions and relationships)
   exportable as JSON for portability and inspection: decisions with their refs,

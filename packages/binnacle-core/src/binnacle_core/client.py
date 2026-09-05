@@ -382,7 +382,13 @@ class Binnacle:
         limit: int = 500,
         after_id: int | None = None,
     ) -> list[tuple[Transition, CompactDecision]]:
-        """FR-6.5: the changes feed. See `StorePort.changes`."""
+        """FR-6.5: the changes feed. See `StorePort.changes` for full pagination
+        semantics -- `after_id` must be paired with `since` set to that same
+        boundary transition's `at`, or the tiebreaker cannot be built.
+
+        Raises:
+            ValueError: `after_id` is given without `since`.
+        """
         return await self._store.changes(since, actions, actor, limit, after_id)
 
     async def get_many(self, ids: Sequence[UUID]) -> list[Decision]:

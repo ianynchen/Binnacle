@@ -452,8 +452,25 @@ class StorePort(Protocol):
     ) -> list[tuple[Transition, CompactDecision]]:
         """FR-6.5: transitions filtered by window (`since`), `actions`, and
         `actor`, each paired with its decision's compact projection. Most-recent
-        first, capped at `limit`. `after_id` provides a tiebreaker for transitions
-        sharing the same timestamp."""
+        first, capped at `limit`.
+
+        Pagination: `after_id` resumes past a specific transition, not merely a
+        timestamp -- pass the previous page's last transition's `transition_id`
+        as `after_id` **and** that same transition's `at` as `since` together.
+        Postgres's `now()` (the `at` column's default) is transaction *start*
+        time, so two overlapping transactions can commit in an order that
+        disagrees with which one started, and therefore with which one got the
+        lower `transition_id`; `transition_id` and `at` can then sort in
+        opposite directions for two rows. `after_id` alone (`transition_id <
+        after_id`) is blind to that and can skip such a row forever. Passing
+        `since` alongside it lets the store apply
+        `(at < since) OR (at = since AND transition_id < after_id)`, which
+        agrees with the feed's own `ORDER BY at DESC, transition_id DESC` even
+        when id order and `at` order disagree.
+
+        Raises:
+            ValueError: `after_id` is given without `since`.
+        """
         ...
 
     async def open_queue(

@@ -29,6 +29,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 
 from binnacle_core.adapters.postgres_store import PostgresStore
@@ -61,6 +62,19 @@ def _decision(**overrides: Any) -> Decision:
     }
     base.update(overrides)
     return Decision(**base)
+
+
+def _set_transition_at(pg_dsn: str, schema: str, transition_id: int, at: datetime) -> None:
+    """Test-only poke: pin a transition's `at` directly, bypassing
+    `apply_transition`'s `now()` default (mirrors
+    `test_pagination.py::_set_proposed_at`'s technique). Needed to engineer a
+    `transition_id` vs. `at` ordering that disagrees -- the discordant-order
+    shape a plain `transition_id < after_id` tiebreaker cannot handle."""
+    with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        conn.execute(
+            f'UPDATE "{schema}".transitions SET at = %s WHERE transition_id = %s',
+            (at, transition_id),
+        )
 
 
 def _perturb(vector: list[float], flips: int) -> list[float]:
@@ -552,3 +566,80 @@ class TestChangesTiebreaker:
             "the timestamp-tied sibling must still come back -- `since` alone "
             "can't distinguish it from the already-seen row, only after_id can"
         )
+
+    async def test_paging_does_not_skip_a_row_whose_at_disagrees_with_id_order(
+        self, store: PostgresStore, pg_dsn: str, scratch_schema: str
+    ) -> None:
+        """Postgres's `now()` (the `at` default) is transaction *start* time,
+        not commit time, so two overlapping transactions can commit in an
+        order that disagrees with which one started -- and therefore with
+        which one got the lower `transition_id`. A plain
+        `t.transition_id < %(after_id)s` filter (the previous, unconditional
+        form) is blind to that: a row that sorts *after* the boundary row
+        under the feed's own `ORDER BY t.at DESC, t.transition_id DESC`
+        (because its `at` is earlier) but whose `transition_id` is *higher*
+        than the boundary's fails `id < after_id` and is skipped forever.
+
+        This seeds that discordant order directly (bypassing `now()`, the
+        same test-only poke technique `test_pagination.py::_set_proposed_at`
+        uses for `open_queue()`'s analogous fixed keyset bug) and asserts the
+        next page still returns the row."""
+        lower_id_decision, higher_id_decision = uuid4(), uuid4()
+        async with store.transaction() as tx:
+            await store.insert_decision(
+                tx, _decision(decision_id=lower_id_decision), f"h-{lower_id_decision}"
+            )
+            await store.apply_transition(
+                tx, lower_id_decision, "recorded", HUMAN.as_str(), None, None, "current"
+            )
+        async with store.transaction() as tx:
+            await store.insert_decision(
+                tx, _decision(decision_id=higher_id_decision), f"h-{higher_id_decision}"
+            )
+            await store.apply_transition(
+                tx, higher_id_decision, "recorded", HUMAN.as_str(), None, None, "current"
+            )
+
+        seeded = await store.changes(limit=10)
+        lower_id_transition = next(t for t, d in seeded if d.id == lower_id_decision)
+        higher_id_transition = next(t for t, d in seeded if d.id == higher_id_decision)
+        assert lower_id_transition.transition_id < higher_id_transition.transition_id, (
+            "test invalid unless insertion order gave lower_id_decision the lower id"
+        )
+
+        # Force the discordant order: the *lower*-id transition gets the
+        # *later* `at`, the *higher*-id transition gets the *earlier* `at`
+        # -- exactly what a pair of overlapping transactions can produce.
+        later_at = datetime.now(UTC)
+        earlier_at = later_at - timedelta(seconds=5)
+        _set_transition_at(pg_dsn, scratch_schema, lower_id_transition.transition_id, later_at)
+        _set_transition_at(pg_dsn, scratch_schema, higher_id_transition.transition_id, earlier_at)
+
+        # `lower_id_transition` (at=later_at) now sorts first under
+        # `ORDER BY t.at DESC, t.transition_id DESC`; it is the boundary row
+        # of a `limit=1` first page.
+        first_page = await store.changes(limit=1)
+        [(boundary_transition, _)] = first_page
+        assert boundary_transition.transition_id == lower_id_transition.transition_id
+
+        next_page = await store.changes(
+            since=boundary_transition.at,
+            after_id=boundary_transition.transition_id,
+            limit=10,
+        )
+        next_ids = {t.transition_id for t, _ in next_page}
+
+        assert higher_id_transition.transition_id in next_ids, (
+            "higher_id_transition's earlier `at` sorts it after the boundary row in "
+            "the feed's own ordering, so paging past the boundary must still return "
+            "it -- an id-only tiebreaker skips it permanently"
+        )
+
+    async def test_after_id_without_since_is_refused(self, store: PostgresStore) -> None:
+        """`after_id` alone cannot build the two-clause boundary predicate --
+        it needs the boundary row's `at` too (passed as `since`). Silently
+        falling back to the old unconditional `id < after_id` filter would
+        reintroduce the skip this class's other tests guard against, so the
+        combination is refused loudly instead."""
+        with pytest.raises(ValueError, match="since"):
+            await store.changes(after_id=1)

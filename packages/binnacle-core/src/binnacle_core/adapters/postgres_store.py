@@ -1157,7 +1157,29 @@ class PostgresStore:
         schema = self._schema
         conditions = []
         params: dict[str, Any] = {"compact_chars": _DEFAULT_COMPACT_CHARS, "limit": limit}
-        if since is not None:
+        if after_id is not None:
+            # `t.transition_id < after_id` alone is not a valid tiebreaker:
+            # Postgres's `now()` (the `at` default) is transaction *start*
+            # time, so two overlapping transactions can commit in an order
+            # that disagrees with which one started, and therefore with
+            # which one got the lower `transition_id`. A row whose `at` is
+            # earlier than the boundary row's sorts *after* it under this
+            # feed's own `ORDER BY t.at DESC, t.transition_id DESC` even if
+            # its `transition_id` is higher -- `id < after_id` would then
+            # exclude it forever. `since` is required alongside `after_id`
+            # here to supply that boundary row's own `at`, so the two-clause
+            # form below agrees with the `ORDER BY`.
+            if since is None:
+                msg = (
+                    "changes() requires `since` (the boundary row's `at`) when `after_id` is given"
+                )
+                raise ValueError(msg)
+            conditions.append(
+                "((t.at < %(since)s) OR (t.at = %(since)s AND t.transition_id < %(after_id)s))"
+            )
+            params["since"] = since
+            params["after_id"] = after_id
+        elif since is not None:
             conditions.append("t.at >= %(since)s")
             params["since"] = since
         if actions is not None:
@@ -1166,9 +1188,6 @@ class PostgresStore:
         if actor is not None:
             conditions.append("t.actor = %(actor)s")
             params["actor"] = actor.as_str()
-        if after_id is not None:
-            conditions.append("t.transition_id < %(after_id)s")
-            params["after_id"] = after_id
         where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = (
             "SELECT t.*, d.domain AS d_domain, d.tier AS d_tier, d.status AS d_status, "
