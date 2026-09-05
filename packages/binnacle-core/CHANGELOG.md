@@ -6,6 +6,13 @@ All notable changes to `binnacle-core` are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- `Tier`, `PrecedentHit`, `BackfillSummary`, `DiscoverySummary`, and
+  `ArchivalSummary` are re-exported from the top-level package. They are
+  named by public method signatures, so callers restricted to the public
+  surface previously could not annotate what those methods return.
+
 ## [0.4.0] - 2026-09-05
 
 ### Added
