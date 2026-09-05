@@ -23,21 +23,10 @@ from binnacle_core import (
     Page,
     Tier,
 )
+from binnacle_router.routes import _paired
 
 SortKey = Literal["decided_at", "recorded_at", "last_touched_at", "valid_until"]
 Order = Literal["asc", "desc"]
-
-
-def _paired(kind: str | None, identifier: str | None, *, name: str) -> tuple[str, str] | None:
-    """Pair a `{name}_kind`/`{name}_identifier` query-parameter pair into the
-    `(kind, identifier)` tuple `relevant()`/`relevant_count()` expect.
-    Supplying only one half is meaningless and would otherwise be silently
-    dropped, widening the query -- so it raises, which Task 3's `ValueError`
-    handler turns into a 422."""
-    if (kind is None) != (identifier is None):
-        msg = f"{name}_kind and {name}_identifier must be supplied together"
-        raise ValueError(msg)
-    return None if kind is None else (kind, identifier)  # type: ignore[return-value]
 
 
 class _FilterFields(BaseModel):
