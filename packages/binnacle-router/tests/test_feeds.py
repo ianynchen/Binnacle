@@ -59,11 +59,15 @@ def test_changes_pairs_are_wrapped_in_named_fields(http: TestClient, client: Asy
     assert entry["transition"]["decision_id"] == str(decision_id)
     assert entry["transition"]["action"] == "recorded"
     assert entry["transition"]["actor"] == {"kind": "agent", "id": "meridian/sess-1"}
+    # Pydantic v2 renders a UTC `datetime` with a `Z` suffix, not `+00:00`.
+    assert entry["transition"]["at"] == "2026-09-01T12:00:00Z"
     assert entry["transition"]["reason"] == "initial record"
     assert entry["transition"]["new_status"] == "current"
     assert entry["transition"]["payload"] is None
     assert entry["decision"]["id"] == str(decision_id)
     assert entry["decision"]["domain"] == "architecture"
+    assert entry["decision"]["tier"] == "long_term"
+    assert entry["decision"]["status"] == "current"
     assert entry["decision"]["outcome_truncated"] == "Use PostgreSQL for the decision store."
     assert entry["decision"]["subject_refs"] == [
         {"role": "subject", "kind": "component", "identifier": "portolan-ingest", "note": None}
@@ -96,7 +100,7 @@ def test_changes_forwards_since_actions_limit_and_after_id(
 def test_changes_actor_filter_is_paired_into_an_actor(http: TestClient, client: AsyncMock) -> None:
     """`actor` is a filter, not an attested identity -- it is client-supplied
     query data, unlike the actor the write endpoints resolve via `get_actor`.
-    Reuses the same `_paired` helper `subject`/`evidence` use in
+    Reuses the same `paired` helper `subject`/`evidence` use in
     `decisions.py`, just constructing an `Actor` from the pair instead of
     passing the raw tuple through."""
     client.changes.return_value = []
@@ -147,6 +151,9 @@ def test_precedent_forwards_filters_and_serializes_hits(
     assert body[0]["similarity"] == 0.87
     assert body[0]["decision"]["id"] == str(decision.id)
     assert body[0]["decision"]["domain"] == "architecture"
+    assert body[0]["decision"]["tier"] == "long_term"
+    assert body[0]["decision"]["status"] == "current"
+    assert body[0]["decision"]["outcome_truncated"] == "Use PostgreSQL for the decision store."
     assert body[0]["decision"]["subject_refs"] == [
         {"role": "subject", "kind": "component", "identifier": "portolan-ingest", "note": None}
     ]

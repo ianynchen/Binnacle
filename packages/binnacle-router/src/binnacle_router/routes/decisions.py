@@ -23,7 +23,7 @@ from binnacle_core import (
     Page,
     Tier,
 )
-from binnacle_router.routes import _paired
+from binnacle_router.params import paired
 
 SortKey = Literal["decided_at", "recorded_at", "last_touched_at", "valid_until"]
 Order = Literal["asc", "desc"]
@@ -83,8 +83,8 @@ def decision_read_router(binnacle: Binnacle) -> APIRouter:
     async def list_decisions(
         filters: Annotated[DecisionsQuery, Query()],
     ) -> Page[CompactDecision] | Page[Decision]:
-        subject = _paired(filters.subject_kind, filters.subject_identifier, name="subject")
-        evidence = _paired(filters.evidence_kind, filters.evidence_identifier, name="evidence")
+        subject = paired(filters.subject_kind, filters.subject_identifier, name="subject")
+        evidence = paired(filters.evidence_kind, filters.evidence_identifier, name="evidence")
         # Branching on a literal per call (rather than passing `filters.projection`
         # straight through) mirrors `Binnacle.relevant()`'s own docstring: with this
         # many `Optional` parameters, a call site carrying a union-typed `projection`
@@ -126,8 +126,8 @@ def decision_read_router(binnacle: Binnacle) -> APIRouter:
 
     @router.get("/decisions/count")
     async def count_decisions(filters: Annotated[CountQuery, Query()]) -> dict[str, int]:
-        subject = _paired(filters.subject_kind, filters.subject_identifier, name="subject")
-        evidence = _paired(filters.evidence_kind, filters.evidence_identifier, name="evidence")
+        subject = paired(filters.subject_kind, filters.subject_identifier, name="subject")
+        evidence = paired(filters.evidence_kind, filters.evidence_identifier, name="evidence")
         count = await binnacle.relevant_count(
             domains=filters.domains,
             subject=subject,

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from binnacle_core import Actor, Binnacle, CompactDecision, PrecedentHit, Tier, Transition
-from binnacle_router.routes import _paired
+from binnacle_router.params import paired
 
 
 class ChangesQuery(BaseModel):
@@ -72,7 +72,7 @@ def feeds_router(binnacle: Binnacle) -> APIRouter:
         """The changes feed. Wraps each `(Transition, CompactDecision)` pair
         `Binnacle.changes()` returns as `{"transition": ..., "decision": ...}`
         -- see `ChangeEntry`."""
-        actor_pair = _paired(filters.actor_kind, filters.actor_id, name="actor")
+        actor_pair = paired(filters.actor_kind, filters.actor_id, name="actor")
         actor = None if actor_pair is None else Actor(*actor_pair)  # type: ignore[arg-type]
         pairs = await binnacle.changes(
             since=filters.since,
