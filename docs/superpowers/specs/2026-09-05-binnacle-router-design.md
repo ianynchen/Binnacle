@@ -59,6 +59,34 @@ alternatives:
 - **One runtime for both surfaces** — MCP (§5) can share the same ASGI app and
   event loop rather than running a second concurrency model beside it.
 
+### 4.1.1 How the router obtains its `Binnacle` client
+
+**The host constructs `Binnacle` and passes it in.** The router never builds
+one:
+
+```python
+def make_router(*, binnacle: Binnacle, get_actor: ActorResolver) -> APIRouter: ...
+
+
+# host side
+app.include_router(make_router(binnacle=my_binnacle, get_actor=meridian_actor))
+```
+
+This is forced, not stylistic. `BinnacleConfig` requires a live `embedder`
+object, and `Embedder`/`Suggester` are **host-fulfilled ports** (meridian via
+tradewind's light tier) — not configuration a router could read from anywhere.
+A router that tried to construct its own client could not satisfy them, and
+would additionally have to read config from the environment, which FR-8.1
+forbids one layer down ("no daemon, no env/file/global reads").
+
+It also avoids a second failure: a host already embedding `binnacle-core` for
+its own sweep jobs would otherwise end up with two clients and two connection
+pools against one database.
+
+The MCP server object (§5) takes the same two arguments for the same reasons.
+This mirrors actor attestation (§6) exactly — the host supplies what it already
+owns — so it is one integration pattern, not two.
+
 ### 4.2 Path convention
 
 Routes live under **`/binnacle/v1/...`**. The host decides everything above
@@ -82,7 +110,9 @@ this means zero alias/translation layer.
 |---|---|
 | `POST /binnacle/v1/decisions` | `record()` — short-term |
 | `POST /binnacle/v1/decisions/long_term` | `record_long_term()` — human-only |
-| `GET /binnacle/v1/decisions` | `relevant()` — filters, sort, cursor as query params; `source=` folds in `by_source()`; `ids=a,b,c` folds in `get_many()` |
+| `GET /binnacle/v1/decisions` | `relevant()` — filters, sort, cursor as query params; `source=` folds in `by_source()` (it is simply another filter) |
+| `GET /binnacle/v1/decisions/count` | `relevant_count()` — same filter params, no pagination params |
+| `POST /binnacle/v1/decisions:batch_get` | `get_many()` — body `{ids: [...]}` |
 | `GET /binnacle/v1/decisions/{id}/history` | `history()` |
 | `POST /binnacle/v1/decisions/{id}/relationships` | `supersede()` / `supplement()` — body `{kind, target_id}` |
 | `POST /binnacle/v1/decisions:promote_refined` | `promote_refined()` — collection-level, takes a list of source ids |
@@ -105,6 +135,22 @@ than one custom action per relationship kind, because `links` is a real entity
 in the domain model, not an RPC verb. The `:action` suffix is reserved for
 things that genuinely are verbs — appropriate here because the domain is
 append-only and immutable, so `PUT`/`PATCH` semantics fit almost nothing.
+
+**Relationship direction is explicit.** The path `{id}` is the **`from`** side
+and `target_id` the **`to`** side, matching both `supersede(new_id, old_id)` /
+`supplement(new_id, old_id)`'s argument order and the `links` table's
+`from_id`/`to_id` columns. So `POST /decisions/{new}/relationships` with
+`{"kind": "SUPERSEDES", "target_id": "<old>"}` reads as "*new* supersedes
+*old*." Stating this is not pedantry: a 50/50 guess at implementation time
+produces backwards supersession, which is data corruption rather than a
+cosmetic defect.
+
+**`get_many()` is deliberately *not* folded into `GET /decisions`.** Batch
+fetch by id and filtered query are incompatible modes: a cursor over a fixed id
+list is meaningless, and `ids=` combined with `domains=` has no defined
+behavior. It is also a `POST` rather than a `GET` with a query string because
+200 UUIDs is roughly 7.4 KB of URL, past common limits — the `:action`
+convention already covers POST-for-verb.
 
 ### 4.4 Request/response schemas
 
@@ -277,6 +323,29 @@ cross-package dependency rule until this package had a design.
   parallel schema layer buys only independent-versioning insulation, which is
   not needed while the two packages ship together.
 
+### 8.1 Document amendments this triggers
+
+`docs/binnacle-router/REQUIREMENTS.md` and `docs/binnacle-router/ARCHITECTURE.md`
+are currently scaffold stubs that explicitly say the package has no functional
+design yet. Implementing this spec replaces both with real content — the
+endpoint catalog and MCP tool set as functional requirements, and §4.1.1/§6/§7's
+integration decisions as architecture. `docs/OVERVIEW.md`'s cross-package
+section and `packages/binnacle-router/CHANGELOG.md` follow in the same commit
+(GUIDELINES §5).
+
+### 8.2 Known accepted gaps
+
+- **No bulk queue actions.** Declining thirty stale items is thirty round
+  trips. Acceptable for a first cut — over an in-process call this was
+  negligible, and over HTTP it is merely slow rather than wrong — but it is a
+  real UX cost, recorded here rather than discovered later. A
+  `POST /queue:batch_dismiss` is the obvious remedy when someone actually feels
+  it.
+- **Sweep endpoints take no actor.** The three sweeps self-attribute to
+  `engine:binnacle` internally, so they neither need nor accept actor
+  attestation. Hosts should still protect them: they are operational triggers,
+  and nothing in `binnacle-router` stops a caller from hammering `discover()`.
+
 ## 9. Implementation phasing
 
 This spec covers two wire surfaces, which is a large single plan. They are
@@ -300,3 +369,11 @@ actor-attestation and package-structure decisions (§6, §7) bind both.
   stops holding.
 - **MCP SDK ASGI-mounting** — §5.4's verification item, to be settled by a
   spike at plan time before the transport design is locked.
+- **Should `record_decision` expose FR-1.6's caller-supplied `decision_id`?**
+  Idempotent recording exists so retries don't duplicate, and a transparently
+  retried MCP tool call is exactly that scenario — the agent may not even know a
+  retry occurred. Exposing the parameter makes retries safe *if* agents supply
+  and reuse an id; omitting it means every retry writes a second decision. The
+  counter-argument is that asking an LLM to mint and remember a UUID across a
+  retry is optimistic, and an unused parameter is just surface area. Worth a
+  deliberate call rather than silent omission.

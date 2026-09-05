@@ -58,6 +58,18 @@ staleness signal the long-term review journey needs. Long-term decisions never
 auto-archive (FR-3.4 applies to short-term only), so nothing in the record
 currently surfaces "untouched the longest."
 
+**Why not just sort by `recorded_at`, which is stored and needs no join?**
+Because it answers a different question, and answers the staleness one wrongly.
+Supplementing a decision writes a **two-sided** `supplement_linked` transition
+pair — one on each side of the link
+(`application/lifecycle.py:820-825`, verified). So a 2021 policy that was
+supplemented in 2025 carries a 2025 transition: `last_touched_at` correctly
+reports it as recently engaged with, while `recorded_at` would rank it as the
+single stalest decision in the record. `recorded_at` is wrong precisely for
+well-maintained decisions — the ones least deserving of a staleness flag. This
+distinction is why the sort key exists, and it is worth restating because
+`last_touched_at` is the sole reason for the breaking change in §3.2.
+
 Parameterized ordering already has precedent in this codebase:
 `open_queue()` (`postgres_store.py:990`) maps `oldest`/`shakiest`/`domain` to
 three different `ORDER BY` clauses. The new sort keys follow that pattern
@@ -80,6 +92,20 @@ class Page[T](BaseModel):
 Callers resume with `after: str | None = None`. The cursor is **opaque to the
 caller and encoded by `binnacle-core`** — a base64 payload carrying the sort
 key value, the tiebreaker id, and the `(sort, order)` it was minted under.
+
+Opaqueness is deliberate and load-bearing: a *typed* cursor
+(`Cursor(recorded_at, decision_id)`) would pin the pagination mechanism into
+the public API. A survey of other stores confirms the cost of that — keyset
+cursors (Postgres, MySQL, SQLite, Mongo, Elasticsearch `search_after`) carry a
+sort value plus tiebreaker, while backend-supplied tokens (DynamoDB
+`LastEvaluatedKey`, Cassandra paging state) are key maps or opaque blobs of an
+entirely different shape. A `str` accommodates both; a typed cursor would make
+adopting such a backend a breaking API change.
+
+**Verify at plan time:** `class Page[T](BaseModel)` uses PEP 695 generic
+syntax. Python ≥3.13 supports it, but pydantic v2's handling of that
+*specific* form should be confirmed rather than assumed — fall back to
+`Generic[T]` if it isn't clean.
 
 **Why an envelope, when an input-only cursor would have been non-breaking:**
 because an input-only cursor does not actually work. It requires the caller to
@@ -109,6 +135,17 @@ The alternative — flipping the tiebreaker to `decision_id DESC` so row
 comparison works — was rejected: it would change result ordering for
 same-timestamp rows, a real behavior change, to buy SQL tidiness worth nothing
 at this scale.
+
+**Pagination is stable against inserts, not against a moving "now".** With no
+`as_of`, FR-6.1 assumes the current instant, so page 1 fetched at 10:00 and
+page 2 at 10:05 filter against different instants — a decision whose
+`valid_until` falls between them shifts the result set under the cursor.
+`binnacle-core` does **not** silently freeze an instant into the cursor:
+returning an hour-stale view from page 2 is its own surprise, and hidden state
+contradicts FR-8.1's "no hidden state" stance. **The remedy is the caller's and
+is one parameter: pass an explicit `as_of` to pin the view for the duration of
+a pagination run.** Documented here with the fix named, not merely the hazard —
+a warning without a remedy just relocates the trap.
 
 ### 3.3 `changes()` gains `after_id`
 
@@ -188,6 +225,39 @@ A cached count drifts as decisions are recorded or archived concurrently. That
 is acceptable — it is a UI affordance ("about 1,240 results"), not a value any
 caller should treat as transactionally consistent with the page in hand.
 
+**Guarding against filter drift between the two methods.** `relevant()` and
+`relevant_count()` must accept and apply the same filters forever; if a future
+change adds one to `relevant()` and forgets `relevant_count()`, every caller
+using them together gets counts that silently disagree with their pages,
+through no fault of their own and with no symptom until someone notices the
+totals are wrong. Name-drift and wiring-drift are different failures, so three
+layers, each cheap and none redundant:
+
+1. **One shared WHERE-clause builder in the store.** Both methods translate
+   filters to SQL through the same internal function rather than each
+   assembling conditions. This makes "present on both but *applied*
+   differently" hard to write. (The public signatures stay loose kwargs — a
+   shared `DecisionFilter` parameter object would make drift structurally
+   impossible, but costs a second breaking change to `relevant()`'s call style
+   and worse ergonomics for every caller.)
+2. **A signature test** (unit, no database), which catches a newly-added but
+   unforwarded parameter the moment it appears:
+
+```python
+def test_relevant_count_accepts_every_relevant_filter() -> None:
+    """relevant_count() must accept exactly relevant()'s filter parameters.
+    If they drift, counts silently disagree with the pages they describe."""
+    presentation = {"self", "sort", "order", "after", "limit", "projection"}
+    relevant_filters = set(inspect.signature(Binnacle.relevant).parameters) - presentation
+    count_filters = set(inspect.signature(Binnacle.relevant_count).parameters) - {"self"}
+    assert relevant_filters == count_filters
+```
+
+3. **One integration test of the actual invariant** (`tests/db/`): that
+   `relevant_count(F)` equals the number of rows obtained by paging all the way
+   through `relevant(F)`. This is what proves the two agree in *behavior*
+   rather than merely in parameter names.
+
 ## 4. Public surface changes
 
 Additive, except where noted:
@@ -208,13 +278,36 @@ Additive, except where noted:
 to narrow to `Page[Decision]` / `Page[CompactDecision]`. That test is the
 existing guard for this behavior and extends to cover the new shape.
 
+### 4.1 Document amendments this triggers
+
+GUIDELINES §5 requires REQUIREMENTS/ARCHITECTURE to move in the same commit as
+the behavior they describe, and §5.1 requires every schema-describing file to
+move together. This change touches:
+
+- **REQUIREMENTS.md FR-6.1** (Relevance) — amended: sort/order, pagination,
+  the evidence filter, and `expiring_before`.
+- **REQUIREMENTS.md FR-6.4** (Queue reads) — amended: pagination.
+- **REQUIREMENTS.md FR-6.5** (Changes feed) — amended: `after_id`.
+- **REQUIREMENTS.md FR-6.10** — **new**: aggregates and counts
+  (`queue_summary()`, `domain_summary()`, `relevant_count()`). FR-6.9 is
+  currently the last in the series.
+- **REQUIREMENTS.md NFR-7** — new rows in the performance table (§6).
+- **ARCHITECTURE.md §3** — the Query Service component row gains the aggregate
+  responsibility.
+- **ARCHITECTURE.md §4** — the schema block gains the new index (§5).
+- **`packages/binnacle-core/CHANGELOG.md`** — `Unreleased` entry, with the
+  breaking return-type change called out.
+- **`docs/PROJECT.md`** — delivery status entries, each naming its package.
+
 ## 5. Schema and index impact
 
 No table or column changes. Index needs, per addition:
 
 - **Evidence filter** — `idx_refs_subject` is partial (`WHERE role = 'subject'`)
   and cannot serve evidence lookups. Needs a sibling partial index on
-  `refs(kind, identifier) WHERE role = 'evidence'`. One migration.
+  `refs(kind, identifier) WHERE role = 'evidence'`. One migration, numbered
+  **0004** (0001–0003 exist), shipping both an apply step and a rollback step
+  per ARCHITECTURE §4.1's requirement that every migration carry a down-path.
 - **`last_touched_at` sort** — needs `MAX(transitions.at)` per decision.
   `idx_trans_decision` (added in migration 0003) already leads with
   `decision_id`, which is what this lookup requires. **No new index assumed
@@ -230,6 +323,19 @@ NFR-7's targets bind to measured evidence, not assumption (GUIDELINES §5.4).
 sorts and filters; a sort or filter that cannot meet it under measurement is
 what justifies adding an index from §5 — not a guess made while writing this
 document.
+
+The three new methods need their own NFR-7 rows, since an operation with no
+target cannot fail a performance review. Proposed, to be **validated by
+measurement rather than accepted as written**:
+
+| Operation | Proposed target (p95) |
+|---|---|
+| `relevant_count()` | < 200 ms — same filtered scan as `relevant()`, without hydration |
+| `queue_summary()` | < 100 ms — one `GROUP BY` over open items, bounded by `idx_queue_open` |
+| `domain_summary()` | < 100 ms — one `LEFT JOIN` over the registry, which is small by construction |
+
+A method that misses its proposed target under the seeded harness gets an
+index or a revised target, decided from the measurement — not from this table.
 
 ## 7. Decision records
 
