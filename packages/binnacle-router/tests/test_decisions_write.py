@@ -79,6 +79,7 @@ def test_record_long_term_reaches_record_long_term_not_record(
     http.post("/binnacle/v1/decisions/long_term", json=NEW_DECISION)
     client.record_long_term.assert_awaited_once()
     client.record.assert_not_awaited()
+    assert client.record_long_term.await_args.kwargs["actor"] == human_actor
 
 
 def test_promote_refined_passes_source_ids_and_the_resolved_actor(
@@ -113,7 +114,7 @@ def test_relationship_direction_is_path_id_supersedes_target(
 
 
 def test_supplements_routes_to_supplement_not_supersede(
-    http: TestClient, client: AsyncMock
+    http: TestClient, client: AsyncMock, human_actor: Actor
 ) -> None:
     new_id, old_id = uuid4(), uuid4()
     client.supplement.return_value = None
@@ -123,6 +124,7 @@ def test_supplements_routes_to_supplement_not_supersede(
     )
     client.supplement.assert_awaited_once()
     client.supersede.assert_not_awaited()
+    assert client.supplement.await_args.kwargs["actor"] == human_actor
 
 
 def test_an_unknown_relationship_kind_is_rejected(http: TestClient, client: AsyncMock) -> None:
