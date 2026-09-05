@@ -1,15 +1,28 @@
-"""Read-only decision endpoints: direct translations of `Binnacle`'s query
-methods (GUIDELINES §8: no business logic in transport-layer code). Reads are
-unattributed -- none of these take an actor."""
+"""Read-only and write decision endpoints: direct translations of `Binnacle`'s
+query and mutating methods (GUIDELINES §8: no business logic in
+transport-layer code). Reads are unattributed -- none of them take an actor.
+Writes are the first endpoints that carry an attested actor, resolved by the
+host-supplied `get_actor` and never taken from the request body or headers
+(see `router.ActorResolver`'s docstring)."""
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
 
-from binnacle_core import Binnacle, CompactDecision, Decision, HistoryRecord, Page, Tier
+from binnacle_core import (
+    Actor,
+    Binnacle,
+    CompactDecision,
+    Decision,
+    HistoryRecord,
+    NewDecision,
+    Page,
+    Tier,
+)
 
 SortKey = Literal["decided_at", "recorded_at", "last_touched_at", "valid_until"]
 Order = Literal["asc", "desc"]
@@ -162,5 +175,85 @@ def decision_read_router(binnacle: Binnacle) -> APIRouter:
     @router.get("/decisions/{decision_id}/history")
     async def decision_history(decision_id: UUID) -> HistoryRecord:
         return await binnacle.history(decision_id)
+
+    return router
+
+
+class PromoteRefinedRequest(BaseModel):
+    source_ids: list[UUID]
+    refined: NewDecision
+
+
+class RelationshipRequest(BaseModel):
+    """`kind` is closed to the two relationships a caller may curate directly.
+    `PROMOTED_FROM` is internal provenance and `CONFLICTS_WITH` is set only by
+    `resolve_conflict` -- neither is settable here, so FastAPI rejects any
+    other value with a 422 rather than this endpoint silently widening what
+    it accepts."""
+
+    kind: Literal["SUPERSEDES", "SUPPLEMENTS"]
+    target_id: UUID
+
+
+class ReasonRequest(BaseModel):
+    reason: str | None = None
+
+
+def decision_write_router(
+    binnacle: Binnacle, get_actor: Callable[..., Awaitable[Actor]]
+) -> APIRouter:
+    router = APIRouter()
+
+    @router.post("/decisions")
+    async def record_decision(
+        nd: NewDecision, actor: Annotated[Actor, Depends(get_actor)]
+    ) -> Decision:
+        return await binnacle.record(nd, actor=actor)
+
+    @router.post("/decisions/long_term")
+    async def record_long_term_decision(
+        nd: NewDecision, actor: Annotated[Actor, Depends(get_actor)]
+    ) -> Decision:
+        return await binnacle.record_long_term(nd, actor=actor)
+
+    @router.post("/decisions:promote_refined")
+    async def promote_refined_decision(
+        body: PromoteRefinedRequest, actor: Annotated[Actor, Depends(get_actor)]
+    ) -> Decision:
+        return await binnacle.promote_refined(body.source_ids, body.refined, actor=actor)
+
+    @router.post("/decisions/{decision_id}/relationships")
+    async def create_relationship(
+        decision_id: UUID,
+        body: RelationshipRequest,
+        actor: Annotated[Actor, Depends(get_actor)],
+    ) -> None:
+        if body.kind == "SUPERSEDES":
+            await binnacle.supersede(decision_id, body.target_id, actor=actor)
+        else:
+            await binnacle.supplement(decision_id, body.target_id, actor=actor)
+
+    @router.post("/decisions/{decision_id}:recommend")
+    async def recommend_decision(
+        decision_id: UUID,
+        body: ReasonRequest,
+        actor: Annotated[Actor, Depends(get_actor)],
+    ) -> dict[str, int | None]:
+        item_id = await binnacle.recommend(decision_id, actor=actor, reason=body.reason)
+        return {"item_id": item_id}
+
+    @router.post("/decisions/{decision_id}:discard")
+    async def discard_decision(
+        decision_id: UUID,
+        body: ReasonRequest,
+        actor: Annotated[Actor, Depends(get_actor)],
+    ) -> None:
+        await binnacle.discard(decision_id, actor=actor, reason=body.reason)
+
+    @router.post("/decisions/{decision_id}:reactivate")
+    async def reactivate_decision(
+        decision_id: UUID, actor: Annotated[Actor, Depends(get_actor)]
+    ) -> None:
+        await binnacle.reactivate(decision_id, actor=actor)
 
     return router
