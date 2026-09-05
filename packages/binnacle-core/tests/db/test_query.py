@@ -17,10 +17,15 @@ which hash-derived components satisfy with overwhelming probability.
 `TestClientWiring` adds one thin end-to-end check that `Binnacle.precedent()`
 actually delegates to this module and applies `config.compact_outcome_chars`
 -- `application.query.precedent` itself carries the real coverage.
+
+`TestRelevantSorting` (Task 4) covers `relevant()`'s `sort`/`order` params
+directly against `PostgresStore`, plus one `Binnacle`-level test for
+`last_touched_at` (needs `supplement()`, a lifecycle verb the store itself
+doesn't expose).
 """
 
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -30,7 +35,7 @@ from binnacle_core.adapters.postgres_store import PostgresStore
 from binnacle_core.application.config import BinnacleConfig
 from binnacle_core.application.query import precedent
 from binnacle_core.client import Binnacle
-from binnacle_core.domain.models import Actor, Decision
+from binnacle_core.domain.models import Actor, Decision, NewDecision
 from tests.helpers import StubEmbedder
 
 HUMAN = Actor(kind="human", id="alice")
@@ -349,6 +354,85 @@ class TestClientWiring:
             assert hits[0].decision.id == decision.decision_id
             assert hits[0].decision.outcome_truncated == "a muc"
             assert hits[0].similarity == pytest.approx(1.0)
+        finally:
+            await raw_store.aclose()
+            await client.aclose()
+
+
+class TestRelevantSorting:
+    """Task 4: `relevant()`'s ordering is now a parameter -- four closed sort
+    keys, two directions. Defaults reproduce the pre-existing `recorded_at
+    DESC` behaviour exactly; `last_touched_at` is derived from
+    `MAX(transitions.at)` rather than the immutable `recorded_at` column, so
+    a decision recorded long ago but supplemented recently stops ranking as
+    stalest."""
+
+    async def test_defaults_preserve_recorded_at_desc(self, store: PostgresStore) -> None:
+        """The pre-existing ordering is the default; this addition
+        parameterizes it rather than changing it."""
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        ids = [
+            await _seed(store, _decision(recorded_at=base + timedelta(days=i)), [1.0] * DIM)
+            for i in range(3)
+        ]
+
+        default = await store.relevant(limit=50)
+        explicit = await store.relevant(sort="recorded_at", order="desc", limit=50)
+
+        assert [d.id for d in default] == [d.id for d in explicit] == list(reversed(ids))
+
+    async def test_oldest_first_reverses_the_default(self, store: PostgresStore) -> None:
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        for i in range(3):
+            await _seed(store, _decision(recorded_at=base + timedelta(days=i)), [1.0] * DIM)
+
+        newest = await store.relevant(sort="recorded_at", order="desc", limit=50)
+        oldest = await store.relevant(sort="recorded_at", order="asc", limit=50)
+
+        assert [d.id for d in oldest] == list(reversed([d.id for d in newest]))
+
+    async def test_last_touched_at_ranks_a_supplemented_decision_as_recent(
+        self, pg_dsn: str, scratch_schema: str
+    ) -> None:
+        """The whole point of the derived key: a decision recorded long ago but
+        supplemented recently is NOT stale, and recorded_at would rank it
+        stalest. supplement() writes a transition on both sides -- this needs
+        `Binnacle`, since `supplement()` is a lifecycle verb the store itself
+        doesn't expose."""
+        config = BinnacleConfig(
+            dsn=pg_dsn,
+            schema_name=scratch_schema,
+            embedder=StubEmbedder(dim=DIM),
+            embedding_dim=DIM,
+        )
+        client = Binnacle(config)
+        await client.migrate()
+        await client.add_domain("eng", "engineering", actor=HUMAN)
+
+        raw_store = PostgresStore(dsn=pg_dsn, schema_name=scratch_schema, embedding_dim=DIM)
+        try:
+            old = datetime(2021, 1, 1, tzinfo=UTC)
+            target = await _seed(raw_store, _decision(recorded_at=old), [1.0] * DIM)
+            await _seed(raw_store, _decision(recorded_at=old + timedelta(days=1)), [1.0] * DIM)
+
+            oldest_by_record = await client.relevant(sort="recorded_at", order="asc", limit=1)
+            target_id = oldest_by_record[0].id
+            assert target_id == target
+
+            newer = await client.record(
+                NewDecision(
+                    domain="eng",
+                    scenario="a later decision",
+                    outcome="use the newer approach",
+                    reasoning="keeps the system current",
+                    source="test-suite",
+                ),
+                actor=HUMAN,
+            )
+            await client.supplement(newer.decision_id, target_id, actor=HUMAN)
+
+            by_touch = await client.relevant(sort="last_touched_at", order="asc", limit=50)
+            assert by_touch[0].id != target_id, "supplementing should stop ranking it stalest"
         finally:
             await raw_store.aclose()
             await client.aclose()

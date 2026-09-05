@@ -87,6 +87,14 @@ _DEFAULT_COMPACT_CHARS = 200
 # explicit `status` filter or `include_archived`.
 _DEFAULT_RELEVANT_STATUS = frozenset({"current"})
 
+# `relevant()`'s four closed sort keys, mapped to their SQL expression.
+_SORT_EXPRESSIONS: dict[str, str] = {
+    "decided_at": "d.decided_at",
+    "recorded_at": "d.recorded_at",
+    "valid_until": "d.valid_until",
+    "last_touched_at": "lt.last_touched_at",
+}
+
 # FR-6.6 export document schema version (the bundle's own JSON shape, distinct
 # from `decisions.schema_version`).
 _EXPORT_SCHEMA_VERSION = 1
@@ -785,6 +793,25 @@ class PostgresStore:
             params["text"] = f"%{_escape_ilike(text)}%"
         return " AND ".join(conditions), params
 
+    def _relevant_order(self, sort: str, order: str) -> tuple[str, str, str]:
+        """Returns (join_sql, sort_expression, order_by_sql).
+
+        The tiebreaker stays `d.decision_id ASC` in both directions, preserving
+        the ordering that shipped before this parameter existed. Its direction
+        deliberately differs from the primary sort's -- see the keyset predicate
+        in `_relevant_keyset`, which is written out longhand for that reason.
+        """
+        expr = _SORT_EXPRESSIONS[sort]
+        join_sql = ""
+        if sort == "last_touched_at":
+            join_sql = (
+                f" LEFT JOIN LATERAL (SELECT MAX(t.at) AS last_touched_at "
+                f"FROM {self._schema}.transitions t "
+                "WHERE t.decision_id = d.decision_id) lt ON TRUE"
+            )
+        direction = "DESC" if order == "desc" else "ASC"
+        return join_sql, expr, f"ORDER BY {expr} {direction}, d.decision_id ASC"
+
     @overload
     async def relevant(
         self,
@@ -796,6 +823,10 @@ class PostgresStore:
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         compact_chars: int = 200,
     ) -> list[CompactDecision]: ...
@@ -811,6 +842,10 @@ class PostgresStore:
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         compact_chars: None,
     ) -> list[Decision]: ...
@@ -825,6 +860,10 @@ class PostgresStore:
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         compact_chars: int | None = 200,
     ) -> "list[CompactDecision] | list[Decision]":
@@ -840,13 +879,17 @@ class PostgresStore:
         )
         params["limit"] = limit
 
+        join_sql, _sort_expr, order_sql = self._relevant_order(sort, order)
+        if sort == "valid_until":
+            where_sql = f"{where_sql} AND d.valid_until IS NOT NULL"
+
         if compact_chars is not None:
             params["compact_chars"] = compact_chars
             sql = (
                 f"SELECT d.decision_id, d.domain, d.tier, d.status, "
                 f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
-                f"FROM {schema}.decisions d WHERE {where_sql} "
-                "ORDER BY d.recorded_at DESC, d.decision_id ASC LIMIT %(limit)s"
+                f"FROM {schema}.decisions d{join_sql} WHERE {where_sql} "
+                f"{order_sql} LIMIT %(limit)s"
             )
             async with self._read_conn() as conn:
                 cur = await conn.execute(sql, params)
@@ -867,8 +910,8 @@ class PostgresStore:
             ]
 
         sql = (
-            f"SELECT d.* FROM {schema}.decisions d WHERE {where_sql} "
-            "ORDER BY d.recorded_at DESC, d.decision_id ASC LIMIT %(limit)s"
+            f"SELECT d.* FROM {schema}.decisions d{join_sql} WHERE {where_sql} "
+            f"{order_sql} LIMIT %(limit)s"
         )
         async with self._read_conn() as conn:
             cur = await conn.execute(sql, params)

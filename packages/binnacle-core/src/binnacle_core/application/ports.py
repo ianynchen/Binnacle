@@ -304,6 +304,10 @@ class StorePort(Protocol):
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         compact_chars: int = 200,
     ) -> list[CompactDecision]: ...
@@ -319,6 +323,10 @@ class StorePort(Protocol):
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         compact_chars: None,
     ) -> list[Decision]: ...
@@ -333,6 +341,10 @@ class StorePort(Protocol):
         as_of: datetime | None = None,
         text: str | None = None,
         include_archived: bool = False,
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         compact_chars: int | None = 200,
     ) -> list[CompactDecision] | list[Decision]:
@@ -343,7 +355,13 @@ class StorePort(Protocol):
         is an ILIKE substring filter over scenario/outcome/reasoning.
         `include_archived` adds `"archived"` to the effective status set.
 
-        Ordered deterministically: recency (`recorded_at` descending), then id.
+        Ordered by `sort` (default `"recorded_at"`) and `order` (default
+        `"desc"`), then id ascending as a deterministic tiebreaker. `sort`'s four
+        closed keys: `decided_at`, `recorded_at`, `last_touched_at` (derived —
+        `MAX(transitions.at)`, so a decision supplemented recently is not
+        stale even if `recorded_at` is old), and `valid_until` (implicitly
+        excludes decisions with no expiry, since ordering by a column that's
+        NULL for most rows is meaningless).
 
         Projection: `compact_chars` an `int` returns `list[CompactDecision]` with
         `outcome` truncated to that length **in SQL** (no fetch-then-trim, FR-6.7);

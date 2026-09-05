@@ -176,6 +176,10 @@ class Binnacle:
         as_of: datetime | None = None,
         text: str | None = None,
         projection: Literal["compact"] = "compact",
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         include_archived: bool = False,
     ) -> list[CompactDecision]: ...
@@ -191,6 +195,10 @@ class Binnacle:
         text: str | None = None,
         *,
         projection: Literal["full"],
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         include_archived: bool = False,
     ) -> list[Decision]: ...
@@ -204,6 +212,10 @@ class Binnacle:
         as_of: datetime | None = None,
         text: str | None = None,
         projection: Literal["compact", "full"] = "compact",
+        sort: Literal[
+            "decided_at", "recorded_at", "last_touched_at", "valid_until"
+        ] = "recorded_at",
+        order: Literal["asc", "desc"] = "desc",
         limit: int = 50,
         include_archived: bool = False,
     ) -> "list[CompactDecision] | list[Decision]":
@@ -214,6 +226,10 @@ class Binnacle:
         each call site for a literal `projection` (the common case, since it
         has a default); passing a non-literal `projection` value falls back to
         this signature's `list[CompactDecision] | list[Decision]`.
+
+        `sort` (default `"recorded_at"`) and `order` (default `"desc"`)
+        reproduce the pre-existing ordering unless overridden -- see
+        `StorePort.relevant`'s docstring for the four closed sort keys.
 
         Dispatches to one of two `self._store.relevant(...)` calls, each
         passing a concrete `compact_chars` (an `int` literal or `None`)
@@ -234,6 +250,8 @@ class Binnacle:
                 as_of=as_of,
                 text=text,
                 include_archived=include_archived,
+                sort=sort,
+                order=order,
                 limit=limit,
                 compact_chars=self._config.compact_outcome_chars,
             )
@@ -245,6 +263,8 @@ class Binnacle:
             as_of=as_of,
             text=text,
             include_archived=include_archived,
+            sort=sort,
+            order=order,
             limit=limit,
             compact_chars=None,
         )
