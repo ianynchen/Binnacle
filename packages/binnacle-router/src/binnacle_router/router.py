@@ -11,9 +11,10 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter
 
-from binnacle_core import Actor, Binnacle, DomainRecord
+from binnacle_core import Actor, Binnacle
 from binnacle_router.routes.decisions import decision_read_router, decision_write_router
 from binnacle_router.routes.queue import queue_router
+from binnacle_router.routes.registry import registry_router
 
 ActorResolver = Callable[..., Awaitable[Actor]]
 """How the host supplies the acting identity.
@@ -28,12 +29,9 @@ could then self-declare `human` and walk through the promotion gate.
 def make_router(*, binnacle: Binnacle, get_actor: ActorResolver) -> APIRouter:
     router = APIRouter(prefix="/binnacle/v1")
 
-    @router.get("/domains")
-    async def list_domains() -> list[DomainRecord]:
-        return await binnacle.domains()
-
     router.include_router(decision_read_router(binnacle))
     router.include_router(decision_write_router(binnacle, get_actor))
     router.include_router(queue_router(binnacle, get_actor))
+    router.include_router(registry_router(binnacle, get_actor))
 
     return router
