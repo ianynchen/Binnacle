@@ -237,7 +237,15 @@ Consumer → capability map (each row traceable to the FRs below):
   With no `as_of`, "now" is assumed: decisions whose `valid_until` has passed are
   excluded from current-status reads by default. Results are orderable by `sort`
   (`decided_at`, `recorded_at` (default), `last_touched_at` — the most recent
-  transition, or `valid_until`) and `order` (`asc`/`desc`, default `desc`), and
+  transition, or `valid_until`) and `order` (`asc`/`desc`, default `desc`).
+  `sort="valid_until"` also **filters**, independently of `expiring_before`:
+  decisions with no `valid_until` have no position in an expiry ordering, so
+  they are excluded from the results (not merely sorted last) — the same
+  "an unbounded decision is never expiring" rule as `expiring_before`, applied
+  because a caller sorted by expiry rather than because one was requested.
+  This means `relevant_count()` (FR-6.10), which takes no `sort`, does not
+  agree with a `sort="valid_until"` page's exact count — see its own
+  docstring for the workaround. Results are
   returned as a keyset-paginated `Page` (FR-6.10's aggregate calls answer "how many"
   separately — a `Page` carries no total): pass a page's opaque `next_cursor` back as
   `after` to fetch the next page. A cursor is scoped to the `(sort, order)` it was
