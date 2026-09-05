@@ -173,3 +173,27 @@ class TestQueuePagination:
         assert page.next_cursor is not None
         with pytest.raises(InvalidCursor):
             await bn.queue(order="shakiest", after=page.next_cursor)
+
+    async def test_paging_the_queue_under_domain_order_yields_each_item_once(
+        self, bn: Binnacle
+    ) -> None:
+        """`order="domain"` leads with a domain-name string rather than a
+        datetime or number -- before the cursor codec's `vt` tag existed,
+        `decode_cursor` tried `datetime.fromisoformat()` on every string `v`,
+        so any `after` cursor minted under this order raised `InvalidCursor`
+        on the very next page. Paging past the first page proves the cursor
+        this order mints is actually replayable."""
+        for i in range(11):
+            source = await bn.record(_nd(scenario=f"decision {i}"), actor=AGENT)
+            await bn.recommend(source.decision_id, actor=AGENT, reason="ready")
+
+        seen: list[int] = []
+        cursor: str | None = None
+        for _ in range(50):  # generous bound; asserts termination too
+            page = await bn.queue(order="domain", limit=2, after=cursor)
+            seen.extend(v.item.item_id for v in page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert cursor is None, "pagination did not terminate"
+        assert len(seen) == len(set(seen)), "a queue item appeared on two pages"
