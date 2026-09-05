@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from binnacle_core import (
     AuthorityViolation,
     DecisionNotFound,
+    EmbeddingDimensionMismatch,
     IdempotencyConflict,
     InactiveDomain,
     InvalidCursor,
@@ -31,6 +32,7 @@ CASES = [
     (IdempotencyConflict("diverged"), 409),
     (InvalidCursor("malformed"), 400),
     (AuthorityViolation("agents cannot promote"), 403),
+    (EmbeddingDimensionMismatch("expected 768, got 384"), 500),
     (ValueError("bad argument"), 422),
 ]
 
@@ -52,6 +54,28 @@ def test_error_body_is_an_rfc7807_problem_document(http: TestClient, client: Asy
     assert body["title"] == "AuthorityViolation"
     assert "agents cannot promote" in body["detail"]
     assert body["type"].endswith("authority_violation")
+
+
+def test_embedding_dimension_mismatch_body_is_an_rfc7807_problem_document(
+    http: TestClient, client: AsyncMock
+) -> None:
+    """`EmbeddingDimensionMismatch` is mapped to 500 in `STATUS_BY_ERROR`, but
+    until this test existed nothing asserted its problem-document body --
+    indistinguishable at the wire from an unmapped 500 (see
+    `test_an_unmapped_error_is_not_silently_swallowed` below), which really
+    does propagate rather than returning a body at all. `POST
+    /sweeps:backfill_embeddings` is the only endpoint that can raise this in
+    practice, but the mapping itself lives in `errors.py` and is exercised
+    through `/domains` here like every other case above -- the vehicle
+    endpoint is incidental to what this test checks."""
+    client.domains.side_effect = EmbeddingDimensionMismatch("expected 768, got 384")
+    response = http.get("/binnacle/v1/domains")
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["status"] == 500
+    assert body["title"] == "EmbeddingDimensionMismatch"
+    assert "expected 768, got 384" in body["detail"]
+    assert body["type"].endswith("embedding_dimension_mismatch")
 
 
 def test_an_unmapped_error_is_not_silently_swallowed(http: TestClient, client: AsyncMock) -> None:

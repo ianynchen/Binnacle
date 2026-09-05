@@ -8,4 +8,14 @@ All notable changes to `binnacle-router` are documented here. Format follows
 
 ### Added
 
-- Initial package scaffold (no functionality yet).
+- A mountable `fastapi.APIRouter` (`make_router(binnacle, get_actor)`)
+  exposing `binnacle-core` as REST, plus `install_error_handlers(app)`
+  mapping every typed core error to an RFC 7807 problem document. ~30
+  endpoints across decision reads and writes, the review queue, domain
+  registry and dashboard summaries, the changes/precedent/export feeds,
+  and the three engine sweeps — see `docs/binnacle-router/REQUIREMENTS.md`
+  FR-3 for the full catalog and `README.md` for the mounting recipe.
+- An import-linter contract restricting this package to `binnacle-core`'s
+  public surface (`packages/binnacle-router/pyproject.toml`
+  `[tool.importlinter]`), resolving the dependency-boundary question
+  `docs/OVERVIEW.md` §4 had left open.
