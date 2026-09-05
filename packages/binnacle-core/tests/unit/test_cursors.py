@@ -8,7 +8,14 @@ The payload tags its value's type explicitly (`vt`: `"dt"`/`"num"`/`"str"`/
 `open_queue()`'s `domain` ordering) are indistinguishable by shape alone, so
 several tests below build a payload by hand to prove `decode_cursor` is
 total under a mismatched or unrecognized tag, not just under the tags
-`encode_cursor` itself would ever produce."""
+`encode_cursor` itself would ever produce.
+
+The payload also carries an optional second value (`vt2`/`v2`), tagged and
+decoded the same way as the first -- generic support for `open_queue()`'s
+`shakiest` ordering, whose `ORDER BY` is a genuine three-column composite
+(leading COALESCE expression, `proposed_at`, `item_id`) and so needs all
+three components on its cursor to be replayable without skipping rows tied
+on the leading value."""
 
 import base64
 import json
@@ -21,11 +28,21 @@ from binnacle_core import InvalidCursor
 from binnacle_core.application.cursors import decode_cursor, encode_cursor
 
 
-def _cursor_with_raw_v(raw_v: object, *, vt: object = "dt") -> str:
-    """Build a cursor payload by hand, bypassing `encode_cursor`, so `v` (and
-    its declared `vt` tag) can hold a combination `encode_cursor` itself
-    could never produce."""
-    payload = {"s": "recorded_at", "o": "desc", "vt": vt, "v": raw_v, "t": "abc"}
+def _cursor_with_raw_v(
+    raw_v: object, *, vt: object = "dt", vt2: object = "null", v2: object = None
+) -> str:
+    """Build a cursor payload by hand, bypassing `encode_cursor`, so `v`/`v2`
+    (and their declared `vt`/`vt2` tags) can hold a combination `encode_cursor`
+    itself could never produce."""
+    payload = {
+        "s": "recorded_at",
+        "o": "desc",
+        "vt": vt,
+        "v": raw_v,
+        "vt2": vt2,
+        "v2": v2,
+        "t": "abc",
+    }
     raw = json.dumps(payload, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
@@ -33,19 +50,19 @@ def _cursor_with_raw_v(raw_v: object, *, vt: object = "dt") -> str:
 def test_round_trips_a_datetime_sort_value() -> None:
     at = datetime(2021, 3, 14, 9, 22, 11, tzinfo=UTC)
     token = encode_cursor(sort="recorded_at", order="desc", value=at, tiebreaker="abc")
-    assert decode_cursor(token, sort="recorded_at", order="desc") == (at, "abc")
+    assert decode_cursor(token, sort="recorded_at", order="desc") == (at, None, "abc")
 
 
 def test_round_trips_a_null_sort_value() -> None:
     token = encode_cursor(sort="valid_until", order="asc", value=None, tiebreaker="abc")
-    assert decode_cursor(token, sort="valid_until", order="asc") == (None, "abc")
+    assert decode_cursor(token, sort="valid_until", order="asc") == (None, None, "abc")
 
 
 def test_round_trips_a_numeric_sort_value() -> None:
     """`queue()`'s `shakiest` ordering leads with a numeric (confidence)
     expression rather than a datetime -- the codec must round-trip that too."""
     token = encode_cursor(sort="shakiest", order="asc", value=0.42, tiebreaker="7")
-    assert decode_cursor(token, sort="shakiest", order="asc") == (0.42, "7")
+    assert decode_cursor(token, sort="shakiest", order="asc") == (0.42, None, "7")
 
 
 def test_round_trips_a_string_sort_value_that_is_not_a_valid_date() -> None:
@@ -55,7 +72,24 @@ def test_round_trips_a_string_sort_value_that_is_not_a_valid_date() -> None:
     `datetime.fromisoformat()` on every string `v`, so a value like this one
     would always raise `InvalidCursor`."""
     token = encode_cursor(sort="domain", order="asc", value="architecture", tiebreaker="7")
-    assert decode_cursor(token, sort="domain", order="asc") == ("architecture", "7")
+    assert decode_cursor(token, sort="domain", order="asc") == ("architecture", None, "7")
+
+
+def test_round_trips_a_second_sort_value() -> None:
+    """`queue()`'s `shakiest` ordering is a three-column composite -- its
+    cursor carries a second (`proposed_at`) value alongside the leading
+    numeric one and the `item_id` tiebreaker."""
+    at = datetime(2021, 3, 14, 9, 22, 11, tzinfo=UTC)
+    token = encode_cursor(sort="shakiest", order="asc", value=0.42, value2=at, tiebreaker="7")
+    assert decode_cursor(token, sort="shakiest", order="asc") == (0.42, at, "7")
+
+
+def test_a_cursor_with_no_second_value_decodes_it_as_none() -> None:
+    """A cursor minted without `value2` (every ordering except `shakiest`,
+    and any cursor minted before this second component existed) must decode
+    `value2` as `None` rather than raising."""
+    token = encode_cursor(sort="recorded_at", order="desc", value=None, tiebreaker="abc")
+    assert decode_cursor(token, sort="recorded_at", order="desc") == (None, None, "abc")
 
 
 def test_rejects_a_cursor_minted_under_a_different_sort() -> None:
@@ -118,6 +152,15 @@ def test_rejects_a_cursor_with_no_value_type_tag() -> None:
     payload = {"s": "recorded_at", "o": "desc", "v": "2021-03-14", "t": "abc"}
     raw = json.dumps(payload, separators=(",", ":")).encode()
     token = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    with pytest.raises(InvalidCursor):
+        decode_cursor(token, sort="recorded_at", order="desc")
+
+
+def test_rejects_a_cursor_whose_second_value_tag_does_not_match_its_value() -> None:
+    """The second value (`vt2`/`v2`) is decoded through the same tag-dispatch
+    path as the leading value -- it must be refused on a mismatch too, not
+    silently coerced."""
+    token = _cursor_with_raw_v("whatever", vt="str", vt2="num", v2=[1, 2])
     with pytest.raises(InvalidCursor):
         decode_cursor(token, sort="recorded_at", order="desc")
 

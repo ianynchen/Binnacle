@@ -830,7 +830,7 @@ class PostgresStore:
         the same direction and this ordering's tiebreaker deliberately runs
         opposite to its primary sort.
         """
-        value, tiebreaker = decode_cursor(after, sort=sort, order=order)
+        value, _value2, tiebreaker = decode_cursor(after, sort=sort, order=order)
         expr = _SORT_EXPRESSIONS[sort]
         params["cursor_value"] = value
         params["cursor_id"] = tiebreaker
@@ -1149,11 +1149,32 @@ class PostgresStore:
         `_relevant_keyset`'s longhand predicate shape. All three queue
         orderings ascend, so (unlike `_relevant_keyset`) there's only one
         comparison direction and no tiebreaker-direction mismatch to work
-        around."""
-        value, tiebreaker = decode_cursor(after, sort=order, order="asc")
+        around.
+
+        `oldest` and `domain` are genuinely a single leading value plus the
+        `item_id` tiebreaker -- the two-clause predicate below is exact for
+        them. `shakiest`'s `ORDER BY` is a three-column composite (leading
+        COALESCE expression, then `q.proposed_at`, then `q.item_id`), so a
+        cursor that encoded only the leading value and `item_id` would skip
+        rows tied on the leading value whose `proposed_at`/`item_id` orderings
+        disagree (a lower `item_id` but a later `proposed_at` sorts after the
+        cursor position in `ORDER BY` but fails the two-clause predicate) --
+        see docs/superpowers/specs/2026-09-05-binnacle-core-query-additions-design.md
+        §3.2. `shakiest` therefore builds the full three-clause predicate over
+        all three components instead.
+        """
+        value, value2, tiebreaker = decode_cursor(after, sort=order, order="asc")
         expr = _QUEUE_SORT_EXPRESSIONS[order]
         params["cursor_value"] = value
         params["cursor_id"] = tiebreaker
+        if order == "shakiest":
+            params["cursor_proposed_at"] = value2
+            return (
+                f"(({expr} > %(cursor_value)s) "
+                f"OR ({expr} = %(cursor_value)s AND q.proposed_at > %(cursor_proposed_at)s) "
+                f"OR ({expr} = %(cursor_value)s AND q.proposed_at = %(cursor_proposed_at)s "
+                f"AND q.item_id > %(cursor_id)s))"
+            )
         return (
             f"(({expr} > %(cursor_value)s) "
             f"OR ({expr} = %(cursor_value)s AND q.item_id > %(cursor_id)s))"
@@ -1209,6 +1230,12 @@ class PostgresStore:
                 sort=order,
                 order="asc",
                 value=rows[-1]["_sort_value"],
+                # `shakiest`'s ORDER BY is a three-column composite; its cursor
+                # must carry `proposed_at` too, or replaying it would skip
+                # rows tied on the leading value (see `_queue_keyset`). The
+                # other two orderings are single-key plus `item_id`, so they
+                # leave `value2` at its default (`None`).
+                value2=rows[-1]["proposed_at"] if order == "shakiest" else None,
                 tiebreaker=str(rows[-1]["item_id"]),
             )
             if has_more and rows
