@@ -417,11 +417,10 @@ actor-attestation and package-structure decisions (§6, §7) bind both.
   of the output, reducing peak memory without changing the format.
 - ~~**MCP SDK ASGI-mounting**~~ **Resolved (2026-09-05) by spike:** confirmed
   working; three integration requirements recorded in §5.4.
-- **Should `record_decision` expose FR-1.6's caller-supplied `decision_id`?**
-  Idempotent recording exists so retries don't duplicate, and a transparently
-  retried MCP tool call is exactly that scenario — the agent may not even know a
-  retry occurred. Exposing the parameter makes retries safe *if* agents supply
-  and reuse an id; omitting it means every retry writes a second decision. The
-  counter-argument is that asking an LLM to mint and remember a UUID across a
-  retry is optimistic, and an unused parameter is just surface area. Worth a
-  deliberate call rather than silent omission.
+- ~~**Should `record_decision` expose FR-1.6's caller-supplied
+  `decision_id`?**~~ **Resolved (2026-09-05): yes, as an optional parameter**
+  (§5.2). The counter-argument — that expecting an LLM to mint and reuse a UUID
+  across a retry is optimistic — is real but costs only an unused parameter if
+  it holds, whereas omitting it costs a duplicate decision on every
+  transparently retried call. Worth revisiting once there is evidence of how
+  agents actually use it.
