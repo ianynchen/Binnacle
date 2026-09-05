@@ -264,6 +264,8 @@ class Binnacle:
         Raises:
             InvalidCursor: `after` is malformed, or was minted under a
                 different `sort`/`order` than this call's.
+            InvalidSort: `sort` is not one of the four closed keys named
+                above.
         """
         if projection == "compact":
             return await self._store.relevant(

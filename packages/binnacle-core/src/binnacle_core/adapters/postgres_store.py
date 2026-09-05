@@ -53,6 +53,7 @@ from binnacle_core.domain.errors import (
     DecisionNotFound,
     EmbeddingDimensionMismatch,
     IdempotencyConflict,
+    InvalidSort,
     ItemAlreadyResolved,
     ItemNotFound,
 )
@@ -847,7 +848,20 @@ class PostgresStore:
         the ordering that shipped before this parameter existed. Its direction
         deliberately differs from the primary sort's -- see the keyset predicate
         in `_relevant_keyset`, which is written out longhand for that reason.
+
+        `relevant()` calls this before it ever calls `_relevant_keyset` (which
+        indexes `_SORT_EXPRESSIONS` with the same `sort`), so validating here
+        is the one choke point that guards both lookups.
+
+        Raises:
+            InvalidSort: `sort` is not one of `_SORT_EXPRESSIONS`'s closed
+                keys -- e.g. a value that bypassed the `Literal` type check
+                (a REST layer deserializing an untyped request body). Without
+                this, the dict lookup below would raise a bare `KeyError`.
         """
+        if sort not in _SORT_EXPRESSIONS:
+            msg = f"unknown sort {sort!r}; expected one of {sorted(_SORT_EXPRESSIONS)}"
+            raise InvalidSort(msg)
         expr = _SORT_EXPRESSIONS[sort]
         join_sql = ""
         if sort == "last_touched_at":

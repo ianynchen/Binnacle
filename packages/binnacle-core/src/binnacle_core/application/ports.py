@@ -410,6 +410,7 @@ class StorePort(Protocol):
         Raises:
             InvalidCursor: `after` is malformed, or was minted under a
                 different `sort`/`order` than this call's.
+            InvalidSort: `sort` is not one of the four closed keys above.
         """
         ...
 
