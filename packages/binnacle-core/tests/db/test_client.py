@@ -11,7 +11,7 @@ state-machine coverage, already exhaustive in tests/db/test_lifecycle.py.
 
 import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -262,6 +262,42 @@ class TestQueryDelegation:
         source = await bn.record(_nd(), actor=AGENT)
         changes = await bn.changes(actions=["recorded"])
         assert any(t.decision_id == source.decision_id for t, _ in changes)
+
+    async def test_relevant_evidence_filter_is_forwarded(self, bn: Binnacle) -> None:
+        """Store-level coverage (tests/db/test_query.py TestEvidenceFilter)
+        proves `PostgresStore._relevant_where` builds the right SQL for
+        `evidence`; the signature-parity test
+        (tests/unit/test_query_signatures.py) only guards that
+        `relevant()`/`relevant_count()` accept the same parameter *names*.
+        Neither would catch `Binnacle.relevant()` mis-forwarding (or
+        dropping) the `evidence` kwarg on its way to the store call
+        underneath -- this exercises that wiring directly."""
+        cited = await bn.record(
+            _nd(refs=[Ref(role="evidence", kind="session", identifier="sess-42", note=None)]),
+            actor=AGENT,
+        )
+        await bn.record(_nd(), actor=AGENT)  # cites nothing -- must not match
+
+        page = await bn.relevant(evidence=("session", "sess-42"))
+
+        assert [d.id for d in page.items] == [cited.decision_id]
+        assert await bn.relevant_count(evidence=("session", "sess-42")) == 1
+
+    async def test_relevant_expiring_before_filter_is_forwarded(self, bn: Binnacle) -> None:
+        """Same rationale as `test_relevant_evidence_filter_is_forwarded`
+        above, for `expiring_before` (tests/db/test_query.py
+        TestExpiringBeforeFilter has the store-level SQL coverage)."""
+        soon = datetime.now(UTC) + timedelta(days=7)
+        far = datetime.now(UTC) + timedelta(days=30)
+        expiring = await bn.record(_nd(valid_until=soon), actor=AGENT)
+        await bn.record(_nd(valid_until=None), actor=AGENT)  # never expires
+        await bn.record(_nd(valid_until=far), actor=AGENT)  # outside the window
+
+        horizon = datetime.now(UTC) + timedelta(days=14)
+        page = await bn.relevant(expiring_before=horizon)
+
+        assert [d.id for d in page.items] == [expiring.decision_id]
+        assert await bn.relevant_count(expiring_before=horizon) == 1
 
 
 class TestQueueResolutionDelegation:
