@@ -337,6 +337,13 @@ measurement rather than accepted as written**:
 A method that misses its proposed target under the seeded harness gets an
 index or a revised target, decided from the measurement — not from this table.
 
+**One measurement not about this spec's additions**, captured here because the
+seeded harness is the only place that builds design-scale data: record the
+`export()` bundle's **size and duration** at 10k/100k. The
+`binnacle-router` spec defers its "should `/export` stream?" decision to that
+number, and the router's own test suite has no seeded corpus of its own. The
+marginal cost is a few lines in a perf test already being modified.
+
 ## 7. Decision records
 
 - **DR-1 Pagination returns an envelope, accepting a breaking change.** An

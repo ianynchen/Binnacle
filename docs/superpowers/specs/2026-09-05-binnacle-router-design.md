@@ -200,7 +200,7 @@ attempt undercuts the "suggest, never commit" line the whole system is built on
 |---|---|---|
 | `search_precedent` | `precedent()` | "Have we decided something like this before?" — the highest-value tool; what stops re-litigation |
 | `get_relevant_decisions` | `relevant()`, compact projection | Top-N context injection at task start |
-| `record_decision` | `record()` — always short-term | Write down what the agent settled |
+| `record_decision` | `record()` — always short-term; accepts an optional `decision_id` | Write down what the agent settled |
 | `recommend_promotion` | `recommend()` | The agent's one legitimate path toward the human gate |
 | `get_decision_history` | `history()` | Follow an id from a precedent hit into full reasoning and evolution |
 | `list_domains` | domain registry read | Agents must use a registered domain; without this they guess and eat `UnknownDomain` |
@@ -208,6 +208,14 @@ attempt undercuts the "suggest, never commit" line the whole system is built on
 Compact projections are the default (FR-6.7 exists because "full reasoning
 blobs are a token budget hazard"); full detail is reachable only by asking for
 one decision by id.
+
+**`record_decision` accepts an optional `decision_id`** (FR-1.6). A
+transparently retried tool call is the exact scenario idempotent recording
+exists for — the agent may not even know a retry occurred — and without the
+parameter every retry writes a duplicate. It is optional, so an agent that
+ignores it still records normally; an agent that mints and reuses one gets
+retry safety, and a divergent write under the same id raises
+`IdempotencyConflict` rather than being silently swallowed.
 
 ### 5.3 Deliberate exclusions
 
@@ -385,10 +393,28 @@ actor-attestation and package-structure decisions (§6, §7) bind both.
   hard maximum that a trusted in-process Python caller does not. Recommended:
   yes, cap it — but the value should be set once the core spec's perf
   measurements exist rather than guessed here.
-- **Should `GET /export` stream?** `export()` returns a whole bundle
-  synchronously. At NFR-5's stated scale ("thousands, not millions") a single
-  response is fine; a streaming variant is a real question only if that bound
-  stops holding.
+- ~~**Should `GET /export` stream?**~~ **Resolved (2026-09-05): no, and the
+  trigger for revisiting is a measured number rather than a judgment call.**
+
+  Streaming is not a router decision to begin with: `binnacle-core.export()`
+  returns a fully-materialized `ExportBundle`, so the router cannot stream what
+  it receives as one object. Real streaming would require a generator-based
+  export API in core *and* a wire-format change (NDJSON records instead of one
+  JSON document), which would amend FR-6.6's contract — the same shape of
+  finding as pagination: the constraint lives upstream.
+
+  Export is an occasional admin operation ("a backup, or handing the decision
+  history to something that will never speak to binnacle", README §7.6), not a
+  hot path, so a single response is appropriate. But rather than assert it is
+  small enough, **the seeded perf harness — which already builds the 10k
+  decisions / 100k transitions design scale — reports the export bundle's size
+  and duration**, and that number is recorded alongside NFR-7. Streaming gets
+  revisited when the measurement says so, per §5.4.
+
+  One mitigation available without touching core, if the measurement warrants
+  it: serve the already-built bundle through a `StreamingResponse` with
+  incremental serialization. That avoids FastAPI buffering a second full copy
+  of the output, reducing peak memory without changing the format.
 - ~~**MCP SDK ASGI-mounting**~~ **Resolved (2026-09-05) by spike:** confirmed
   working; three integration requirements recorded in §5.4.
 - **Should `record_decision` expose FR-1.6's caller-supplied `decision_id`?**
