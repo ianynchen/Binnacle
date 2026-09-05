@@ -68,3 +68,10 @@ class InvalidResolution(BinnacleError):
     state-related illegality (wrong status, wrong item kind, a cycle) -- this
     is pure caller argument misuse, decidable before any row is even locked.
     """
+
+
+class InvalidCursor(BinnacleError):
+    """A pagination cursor is malformed, or was minted under a different
+    (sort, order) than the query replaying it. Refused rather than honored:
+    silently paging under the wrong ordering returns wrong rows with no
+    visible symptom."""
