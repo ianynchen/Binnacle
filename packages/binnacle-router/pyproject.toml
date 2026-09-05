@@ -7,7 +7,16 @@ name = "binnacle-router"
 version = "0.1.0"
 description = "REST + MCP surface for binnacle-core (library, not a service)."
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+  "binnacle-core",
+  "fastapi>=0.115",
+]
+
+[dependency-groups]
+dev = ["httpx"]
+
+[tool.uv.sources]
+binnacle-core = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/binnacle_router"]
@@ -21,6 +30,27 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.importlinter]
-root_package = "binnacle_router"
+# `root_packages` (not the singular `root_package`) is required here: forbidding
+# submodules of an external package (binnacle_core.application/.domain/.adapters
+# below) is only valid for import-linter when that package is itself a root
+# package in the graph, not merely picked up via include_external_packages.
+root_packages = ["binnacle_router", "binnacle_core"]
 include_external_packages = true
-# Contracts deferred to binnacle-router's own future spec (see spec DR-7) -- this section currently enforces nothing.
+
+[[tool.importlinter.contracts]]
+name = "router depends only on core's public surface"
+type = "forbidden"
+source_modules = ["binnacle_router"]
+forbidden_modules = [
+  "binnacle_core.application",
+  "binnacle_core.domain",
+  "binnacle_core.adapters",
+]
+# binnacle_core's own __init__.py legitimately re-exports from these
+# submodules (that's the public surface); without this, the forbidden
+# contract's default indirect-chain check flags that internal re-export
+# as if binnacle_router itself reached into binnacle_core.domain, etc.
+# This restricts the contract to what it's meant to catch: a direct
+# `from binnacle_core.domain import ...`-style import in this package's own
+# source.
+allow_indirect_imports = "true"
