@@ -443,41 +443,46 @@ class TestRelevantSorting:
 class TestChangesTiebreaker:
     """Task 7: `changes()` gains `after_id` tiebreaker to handle transitions
     sharing the same timestamp. Without it, they reappear on the next
-    `since=`-based fetch."""
+    `since=`-based fetch.
 
-    async def test_after_id_excludes_transitions_already_seen(
-        self, pg_dsn: str, scratch_schema: str
+    Postgres's `now()` returns *transaction start time*, so two decisions
+    recorded inside one `store.transaction()` block get an identical `at` --
+    the exact condition the tiebreaker exists for. That lets the test force a
+    genuine tie instead of relying on a plain seeding loop, where
+    monotonically increasing `transition_id`s and `at`s never collide."""
+
+    async def test_after_id_excludes_seen_row_but_keeps_its_timestamp_tied_sibling(
+        self, store: PostgresStore
     ) -> None:
-        """Transitions sharing a timestamp would otherwise reappear on the next
-        `since=`-based fetch, since `since` alone cannot separate them."""
-        config = BinnacleConfig(
-            dsn=pg_dsn,
-            schema_name=scratch_schema,
-            embedder=StubEmbedder(dim=DIM),
-            embedding_dim=DIM,
-        )
-        client = Binnacle(config)
-        await client.migrate()
-        await client.add_domain("eng", "engineering", actor=HUMAN)
-
-        raw_store = PostgresStore(dsn=pg_dsn, schema_name=scratch_schema, embedding_dim=DIM)
-        try:
-            # Seed several decisions to ensure we have multiple transitions
-            for i in range(10):
-                await _seed(raw_store, _decision(), [1.0] * DIM)
-
-            first = await client.changes(limit=5)
-            assert first
-            last_transition = first[-1][0]
-
-            # Fetch again with since= set to the timestamp of the last transition
-            # and after_id= set to exclude it
-            following = await client.changes(
-                since=last_transition.at, after_id=last_transition.transition_id, limit=5
+        older_id, newer_id = uuid4(), uuid4()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, _decision(decision_id=older_id), f"h-{older_id}")
+            await store.apply_transition(
+                tx, older_id, "recorded", HUMAN.as_str(), None, None, "current"
+            )
+            await store.insert_decision(tx, _decision(decision_id=newer_id), f"h-{newer_id}")
+            await store.apply_transition(
+                tx, newer_id, "recorded", HUMAN.as_str(), None, None, "current"
             )
 
-            # Verify the last_transition is not in the following results
-            assert all(t.transition_id != last_transition.transition_id for t, _ in following)
-        finally:
-            await raw_store.aclose()
-            await client.aclose()
+        # ORDER BY t.at DESC, t.transition_id DESC: with `at` tied, the
+        # higher transition_id (newer_id's, inserted second) sorts first.
+        seen, unseen = await store.changes(limit=2)
+        seen_transition, _ = seen
+        unseen_transition, _ = unseen
+        assert seen_transition.decision_id == newer_id
+        assert unseen_transition.decision_id == older_id
+        assert seen_transition.at == unseen_transition.at, (
+            "test invalid unless the two transitions share an `at`"
+        )
+
+        following = await store.changes(
+            since=seen_transition.at, after_id=seen_transition.transition_id
+        )
+        following_ids = {t.transition_id for t, _ in following}
+
+        assert seen_transition.transition_id not in following_ids
+        assert unseen_transition.transition_id in following_ids, (
+            "the timestamp-tied sibling must still come back -- `since` alone "
+            "can't distinguish it from the already-seen row, only after_id can"
+        )
