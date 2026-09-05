@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from binnacle_core import Actor, Binnacle
-from binnacle_router import make_router
+from binnacle_router import install_error_handlers, make_router
 
 HUMAN = Actor("human", "alice")
 AGENT = Actor("agent", "meridian/sess-1")
@@ -37,6 +37,7 @@ def app(client: AsyncMock, human_actor: Actor) -> FastAPI:
         return human_actor
 
     application = FastAPI()
+    install_error_handlers(application)
     application.include_router(make_router(binnacle=client, get_actor=get_actor))
     return application
 
