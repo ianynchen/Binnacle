@@ -6,6 +6,21 @@ All notable changes to `binnacle-core` are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- Sortable ordering on `relevant()` (`decided_at`, `recorded_at`,
+  `last_touched_at`, `valid_until`), plus `evidence` and `expiring_before`
+  filters.
+- Keyset pagination on `relevant()` and `queue()` via opaque cursors.
+- `relevant_count()`, `queue_summary()`, `domain_summary()`.
+- `after_id` tiebreaker on `changes()`.
+
+### Changed
+
+- **Breaking:** `relevant()` and `queue()` return `Page[...]` rather than bare
+  lists. An input-only cursor cannot support the derived `last_touched_at`
+  sort key, since callers cannot see a derived value in returned rows.
+
 ## [0.3.0] - 2026-09-04
 
 ### Changed
