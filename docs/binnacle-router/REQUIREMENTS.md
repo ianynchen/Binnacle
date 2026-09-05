@@ -364,5 +364,13 @@ means the read (or, for sweeps, the write) is unattributed.
 
 ## 6. Open Questions
 
-None outstanding for the REST surface documented here. MCP scope, per §5,
-is deferred to its own future planning cycle.
+One question is open on the REST surface itself: **whether `limit` should
+be capped.** It is an unbounded `int` on every paginated endpoint
+(`GET /decisions`, `GET /queue`, `GET /changes`, `GET /precedent`, per the
+FR-3 catalog) — `binnacle-core` validates neither an oversized nor a
+negative value, so both reach it unchanged. See
+`docs/binnacle-router/ARCHITECTURE.md` §8: choosing a cap is an API-policy
+call for the package owner, so a host mounting this surface publicly
+should be aware of it.
+
+MCP scope, per §5, is deferred to its own future planning cycle.
