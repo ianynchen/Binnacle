@@ -737,6 +737,54 @@ class PostgresStore:
             for r in rows
         ]
 
+    def _relevant_where(
+        self,
+        *,
+        domains: Sequence[str] | None,
+        status: Sequence[str] | None,
+        tier: Tier | None,
+        subject: tuple[str, str] | None,
+        as_of: datetime | None,
+        text: str | None,
+        include_archived: bool,
+    ) -> tuple[str, dict[str, Any]]:
+        """The FR-6.1 filter set as SQL. Shared verbatim by `relevant()` and
+        `relevant_count()` so the two can never disagree about what a filter
+        means -- a divergence would make counts silently contradict the pages
+        they describe."""
+        schema = self._schema
+        statuses = set(status) if status is not None else set(_DEFAULT_RELEVANT_STATUS)
+        if include_archived:
+            statuses.add("archived")
+        effective_as_of = as_of if as_of is not None else datetime.now(UTC)
+
+        conditions = ["d.status = ANY(%(statuses)s)"]
+        params: dict[str, Any] = {"statuses": list(statuses), "as_of": effective_as_of}
+        conditions.append("(d.valid_from IS NULL OR d.valid_from <= %(as_of)s)")
+        conditions.append("(d.valid_until IS NULL OR d.valid_until > %(as_of)s)")
+        if domains is not None:
+            conditions.append("d.domain = ANY(%(domains)s)")
+            params["domains"] = list(domains)
+        if tier is not None:
+            conditions.append("d.tier = %(tier)s")
+            params["tier"] = tier
+        if subject is not None:
+            subj_kind, subj_id = subject
+            conditions.append(
+                f"(EXISTS (SELECT 1 FROM {schema}.refs r WHERE r.decision_id = d.decision_id "
+                "AND r.role = 'subject' AND r.kind = %(subj_kind)s AND r.identifier = %(subj_id)s) "
+                f"OR NOT EXISTS (SELECT 1 FROM {schema}.refs r2 "
+                "WHERE r2.decision_id = d.decision_id AND r2.role = 'subject'))"
+            )
+            params["subj_kind"] = subj_kind
+            params["subj_id"] = subj_id
+        if text is not None:
+            conditions.append(
+                "(d.scenario ILIKE %(text)s OR d.outcome ILIKE %(text)s OR d.reasoning ILIKE %(text)s)"
+            )
+            params["text"] = f"%{_escape_ilike(text)}%"
+        return " AND ".join(conditions), params
+
     @overload
     async def relevant(
         self,
@@ -781,41 +829,16 @@ class PostgresStore:
         compact_chars: int | None = 200,
     ) -> "list[CompactDecision] | list[Decision]":
         schema = self._schema
-        statuses = set(status) if status is not None else set(_DEFAULT_RELEVANT_STATUS)
-        if include_archived:
-            statuses.add("archived")
-        effective_as_of = as_of if as_of is not None else datetime.now(UTC)
-
-        conditions = ["d.status = ANY(%(statuses)s)"]
-        params: dict[str, Any] = {
-            "statuses": list(statuses),
-            "as_of": effective_as_of,
-            "limit": limit,
-        }
-        conditions.append("(d.valid_from IS NULL OR d.valid_from <= %(as_of)s)")
-        conditions.append("(d.valid_until IS NULL OR d.valid_until > %(as_of)s)")
-        if domains is not None:
-            conditions.append("d.domain = ANY(%(domains)s)")
-            params["domains"] = list(domains)
-        if tier is not None:
-            conditions.append("d.tier = %(tier)s")
-            params["tier"] = tier
-        if subject is not None:
-            subj_kind, subj_id = subject
-            conditions.append(
-                f"(EXISTS (SELECT 1 FROM {schema}.refs r WHERE r.decision_id = d.decision_id "
-                "AND r.role = 'subject' AND r.kind = %(subj_kind)s AND r.identifier = %(subj_id)s) "
-                f"OR NOT EXISTS (SELECT 1 FROM {schema}.refs r2 "
-                "WHERE r2.decision_id = d.decision_id AND r2.role = 'subject'))"
-            )
-            params["subj_kind"] = subj_kind
-            params["subj_id"] = subj_id
-        if text is not None:
-            conditions.append(
-                "(d.scenario ILIKE %(text)s OR d.outcome ILIKE %(text)s OR d.reasoning ILIKE %(text)s)"
-            )
-            params["text"] = f"%{_escape_ilike(text)}%"
-        where_sql = " AND ".join(conditions)
+        where_sql, params = self._relevant_where(
+            domains=domains,
+            status=status,
+            tier=tier,
+            subject=subject,
+            as_of=as_of,
+            text=text,
+            include_archived=include_archived,
+        )
+        params["limit"] = limit
 
         if compact_chars is not None:
             params["compact_chars"] = compact_chars
