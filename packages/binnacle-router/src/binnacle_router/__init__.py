@@ -6,6 +6,8 @@ this package ships no application of its own. See its own future spec/plan
 §1) for the full REST/MCP surface design; routes are added incrementally.
 """
 
+from importlib.metadata import version
+
 from binnacle_router.errors import STATUS_BY_ERROR, install_error_handlers
 from binnacle_router.router import ActorResolver, make_router
 
@@ -16,4 +18,6 @@ __all__ = [
     "make_router",
 ]
 
-__version__ = "0.2.0"
+# Read from the installed distribution rather than restated here, so
+# pyproject.toml stays the single place a version is declared.
+__version__ = version("binnacle-router")
