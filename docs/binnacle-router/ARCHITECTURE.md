@@ -321,10 +321,11 @@ MCP (REQUIREMENTS §5) is deferred to its own future architectural decision
 when that phase of work begins.
 
 One decision is open on the REST surface itself: **whether `limit` should
-be capped.** It is currently an unbounded `int` on every paginated
-endpoint (`GET /decisions`, `GET /queue`, `GET /changes`,
-`GET /precedent`) — `binnacle-core` validates neither an oversized nor a
-negative value, so both pass straight through.
+be capped.** It is constrained to `>= 1` on every paginated endpoint (`GET
+/decisions`, `GET /queue`, `GET /changes`, `GET /precedent`) — `limit=0`
+and negative values are rejected with a 422 at the HTTP boundary before
+reaching `binnacle-core` — but it remains an unbounded `int` above that
+floor, so an oversized value still passes straight through.
 `docs/superpowers/specs/2026-09-05-binnacle-router-design.md` §10
 recommended capping it once the core spec's performance measurements
 existed at design scale rather than guessing a value up front; those

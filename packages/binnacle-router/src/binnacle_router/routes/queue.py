@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from binnacle_core import Actor, Binnacle, Decision, NewDecision, Page, QueueItemView
 from binnacle_router.errors import BinnacleAPIRoute
@@ -25,7 +25,7 @@ class QueueQuery(BaseModel):
 
     kinds: Annotated[list[str] | None, Query()] = None
     order: QueueOrder = "oldest"
-    limit: int = 50
+    limit: int = Field(default=50, ge=1)
     after: str | None = None
 
 

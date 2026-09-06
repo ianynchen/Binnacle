@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from binnacle_core import (
@@ -123,6 +124,27 @@ def test_queue_cursor_round_trips_verbatim(http: TestClient, client: AsyncMock) 
     client.queue.return_value = Page(items=[], next_cursor=None)
     http.get("/binnacle/v1/queue", params={"after": "opaque-token-xyz"})
     assert client.queue.await_args.kwargs["after"] == "opaque-token-xyz"
+
+
+@pytest.mark.parametrize("limit", [0, -5])
+def test_out_of_range_limit_is_rejected_as_a_problem_document(
+    http: TestClient, client: AsyncMock, limit: int
+) -> None:
+    """Same request-shape defect as `GET /decisions` (see
+    `test_decisions_read.py`): `limit=0`/`limit=-5` must die at the HTTP
+    boundary rather than reach `binnacle.queue()`."""
+    response = http.get("/binnacle/v1/queue", params={"limit": limit})
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["status"] == 422
+    client.queue.assert_not_awaited()
+
+
+def test_queue_limit_of_one_is_accepted(http: TestClient, client: AsyncMock) -> None:
+    client.queue.return_value = Page(items=[], next_cursor=None)
+    response = http.get("/binnacle/v1/queue", params={"limit": 1})
+    assert response.status_code == 200
+    assert client.queue.await_args.kwargs["limit"] == 1
 
 
 def test_promote_passes_the_resolved_actor_and_returns_the_decision(

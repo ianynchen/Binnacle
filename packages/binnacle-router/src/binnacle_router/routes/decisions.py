@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from binnacle_core import (
     Actor,
@@ -58,7 +58,7 @@ class DecisionsQuery(_FilterFields):
 
     sort: SortKey = "recorded_at"
     order: Order = "desc"
-    limit: int = 50
+    limit: int = Field(default=50, ge=1)
     after: str | None = None
     projection: Literal["compact", "full"] = "compact"
 
@@ -167,7 +167,7 @@ def decision_read_router(binnacle: Binnacle) -> APIRouter:
         source: str,
         status: Annotated[list[str] | None, Query()] = None,
         tier: Tier | None = None,
-        limit: int | None = None,
+        limit: Annotated[int | None, Query(ge=1)] = None,
     ) -> list[CompactDecision]:
         filter_kwargs: dict[str, object] = {}
         if status is not None:

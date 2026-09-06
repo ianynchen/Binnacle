@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from binnacle_core import Actor, Binnacle, CompactDecision, PrecedentHit, Tier, Transition
 from binnacle_router.errors import BinnacleAPIRoute
@@ -30,7 +30,7 @@ class ChangesQuery(BaseModel):
     actions: Annotated[list[str] | None, Query()] = None
     actor_kind: str | None = None
     actor_id: str | None = None
-    limit: int = 500
+    limit: int = Field(default=500, ge=1)
     after_id: int | None = None
 
 
@@ -52,7 +52,7 @@ class PrecedentQuery(BaseModel):
     question: str
     domains: Annotated[list[str] | None, Query()] = None
     tiers: Annotated[list[Tier] | None, Query()] = None
-    limit: int = 10
+    limit: int = Field(default=10, ge=1)
     include_dead: bool = True
 
 

@@ -365,10 +365,11 @@ means the read (or, for sweeps, the write) is unattributed.
 ## 6. Open Questions
 
 One question is open on the REST surface itself: **whether `limit` should
-be capped.** It is an unbounded `int` on every paginated endpoint
+be capped.** It is constrained to `>= 1` on every paginated endpoint
 (`GET /decisions`, `GET /queue`, `GET /changes`, `GET /precedent`, per the
-FR-3 catalog) — `binnacle-core` validates neither an oversized nor a
-negative value, so both reach it unchanged. See
+FR-3 catalog) — `limit=0` and negative values are rejected with a 422
+before reaching `binnacle-core` — but it remains an unbounded `int` above
+that floor, so an oversized value still reaches it unchanged. See
 `docs/binnacle-router/ARCHITECTURE.md` §8: choosing a cap is an API-policy
 call for the package owner, so a host mounting this surface publicly
 should be aware of it.

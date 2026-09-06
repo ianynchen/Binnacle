@@ -179,14 +179,14 @@ Three gaps are carried deliberately rather than silently omitted:
   mounting this router must not expose the sweep endpoints on a publicly
   reachable path** — restrict them to an internal scheduler or an
   operator-only network boundary.
-- **`limit` is unbounded on every paginated endpoint.** `GET /decisions`,
-  `GET /queue`, `GET /changes`, and `GET /precedent` all accept `limit` as
-  a plain `int` with no upper (or lower) bound — `limit=999999999` and
-  `limit=-5` both pass straight through to `binnacle-core`, which validates
-  neither. Whether to cap it is an API-policy decision for the host to
-  make, not one this package has made on the host's behalf; a host that
-  cares should validate or clamp `limit` itself before proxying a client's
-  value through.
+- **`limit` has no upper bound on every paginated endpoint.** `GET
+  /decisions`, `GET /queue`, `GET /changes`, and `GET /precedent` all
+  accept `limit` as an `int` constrained to `>= 1` — `limit=0` and
+  `limit=-5` are rejected with a 422 — but `limit=999999999` still passes
+  straight through to `binnacle-core`. Whether to cap it is an API-policy
+  decision for the host to make, not one this package has made on the
+  host's behalf; a host that cares should validate or clamp `limit` itself
+  before proxying a client's value through.
 
 ## Development
 

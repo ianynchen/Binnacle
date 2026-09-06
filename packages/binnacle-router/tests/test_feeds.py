@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from binnacle_core import Actor, CompactDecision, PrecedentHit, Ref, Transition
@@ -122,6 +123,27 @@ def test_half_an_actor_pair_is_rejected(http: TestClient, client: AsyncMock) -> 
     client.changes.assert_not_awaited()
 
 
+@pytest.mark.parametrize("limit", [0, -5])
+def test_changes_out_of_range_limit_is_rejected_as_a_problem_document(
+    http: TestClient, client: AsyncMock, limit: int
+) -> None:
+    """Same request-shape defect as `GET /decisions` (see
+    `test_decisions_read.py`): `limit=0`/`limit=-5` must die at the HTTP
+    boundary rather than reach `binnacle.changes()`."""
+    response = http.get("/binnacle/v1/changes", params={"limit": limit})
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["status"] == 422
+    client.changes.assert_not_awaited()
+
+
+def test_changes_limit_of_one_is_accepted(http: TestClient, client: AsyncMock) -> None:
+    client.changes.return_value = []
+    response = http.get("/binnacle/v1/changes", params={"limit": 1})
+    assert response.status_code == 200
+    assert client.changes.await_args.kwargs["limit"] == 1
+
+
 def test_precedent_requires_a_question(http: TestClient, client: AsyncMock) -> None:
     assert http.get("/binnacle/v1/precedent").status_code == 422
     client.precedent.assert_not_awaited()
@@ -178,6 +200,29 @@ def test_precedent_defaults_are_not_forced_by_the_router(
     assert kwargs["tiers"] is None
     assert kwargs["limit"] == 10
     assert kwargs["include_dead"] is True
+
+
+@pytest.mark.parametrize("limit", [0, -5])
+def test_precedent_out_of_range_limit_is_rejected_as_a_problem_document(
+    http: TestClient, client: AsyncMock, limit: int
+) -> None:
+    """Same request-shape defect as `GET /decisions` (see
+    `test_decisions_read.py`): `limit=0`/`limit=-5` must die at the HTTP
+    boundary rather than reach `binnacle.precedent()`."""
+    response = http.get(
+        "/binnacle/v1/precedent", params={"question": "retry policy?", "limit": limit}
+    )
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["status"] == 422
+    client.precedent.assert_not_awaited()
+
+
+def test_precedent_limit_of_one_is_accepted(http: TestClient, client: AsyncMock) -> None:
+    client.precedent.return_value = []
+    response = http.get("/binnacle/v1/precedent", params={"question": "retry policy?", "limit": 1})
+    assert response.status_code == 200
+    assert client.precedent.await_args.kwargs["limit"] == 1
 
 
 def test_export_is_a_single_response(http: TestClient, client: AsyncMock) -> None:

@@ -10,7 +10,7 @@ gets recorded. `sweeps_router` therefore takes only `binnacle`, like
 `feeds_router`."""
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from binnacle_core import ArchivalSummary, BackfillSummary, Binnacle, DiscoverySummary
 from binnacle_router.errors import BinnacleAPIRoute
@@ -21,7 +21,7 @@ class BatchRequest(BaseModel):
     to 100, matching `Binnacle`'s own default, so an empty body behaves
     identically to calling the client method directly."""
 
-    batch: int = 100
+    batch: int = Field(default=100, ge=1)
 
 
 def sweeps_router(binnacle: Binnacle) -> APIRouter:

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from binnacle_core import (
@@ -348,3 +349,68 @@ def test_as_of_is_parsed_as_a_datetime(http: TestClient, client: AsyncMock) -> N
     assert client.relevant.await_args.kwargs["as_of"] == datetime(
         2021, 3, 14, 9, 22, 11, tzinfo=UTC
     )
+
+
+@pytest.mark.parametrize("limit", [0, -5])
+def test_out_of_range_limit_is_rejected_as_a_problem_document(
+    http: TestClient, client: AsyncMock, limit: int
+) -> None:
+    """`limit=0` is the subtler of the two: the keyset pagination trick in
+    `postgres_store.py` (`params["limit"] = limit + 1`) turns it into
+    `LIMIT 1`, so a client paging on `next_cursor` would loop forever on
+    empty pages. `limit=-5` reaches PostgreSQL as a negative `LIMIT`, which
+    raises and would otherwise surface as an unmapped 500 (`errors.py`
+    registers no catch-all). Neither reaches `binnacle.relevant()` at all
+    once `DecisionsQuery.limit` is constrained to `ge=1`."""
+    response = http.get("/binnacle/v1/decisions", params={"limit": limit})
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["status"] == 422
+    assert body["errors"][0]["loc"] == ["query", "limit"]
+    client.relevant.assert_not_awaited()
+
+
+def test_limit_of_one_is_accepted(http: TestClient, client: AsyncMock) -> None:
+    """Pins the boundary on the correct side: `1` is the smallest
+    meaningful page size and must not be rejected alongside `0`/`-5`."""
+    client.relevant.return_value = _page()
+    response = http.get("/binnacle/v1/decisions", params={"limit": 1})
+    assert response.status_code == 200
+    assert client.relevant.await_args.kwargs["limit"] == 1
+
+
+@pytest.mark.parametrize("limit", [0, -5])
+def test_by_source_out_of_range_limit_is_rejected_as_a_problem_document(
+    http: TestClient, client: AsyncMock, limit: int
+) -> None:
+    """`GET /decisions/by_source`'s `limit` is a bare, optional query
+    parameter (not a pydantic model field like `DecisionsQuery.limit`
+    above) -- constrained the same way via `Query(ge=1)` rather than
+    `Field`, but must reject the same out-of-range values."""
+    response = http.get(
+        "/binnacle/v1/decisions/by_source", params={"source": "meridian", "limit": limit}
+    )
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["status"] == 422
+    client.by_source.assert_not_awaited()
+
+
+def test_by_source_limit_of_one_is_accepted(http: TestClient, client: AsyncMock) -> None:
+    client.by_source.return_value = []
+    response = http.get(
+        "/binnacle/v1/decisions/by_source", params={"source": "meridian", "limit": 1}
+    )
+    assert response.status_code == 200
+    assert client.by_source.await_args.kwargs["limit"] == 1
+
+
+def test_by_source_limit_none_remains_valid(http: TestClient, client: AsyncMock) -> None:
+    """`limit` is optional on this endpoint -- an absent value must still
+    omit the filter entirely (per `test_by_source_omits_unsupplied_filters`
+    above), not be forced into range by the new `ge=1` constraint."""
+    client.by_source.return_value = []
+    response = http.get("/binnacle/v1/decisions/by_source", params={"source": "meridian"})
+    assert response.status_code == 200
+    assert "limit" not in client.by_source.await_args.kwargs

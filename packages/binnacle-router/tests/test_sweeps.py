@@ -10,6 +10,7 @@ fail the assertion just as loudly as one smuggled through as a keyword.
 
 from unittest.mock import AsyncMock, call
 
+import pytest
 from fastapi.testclient import TestClient
 
 from binnacle_core import ArchivalSummary, BackfillSummary, DiscoverySummary
@@ -98,6 +99,34 @@ def test_sweeps_take_no_actor(http: TestClient, client: AsyncMock) -> None:
     client.archive_stale.return_value = ArchivalSummary(archived=0)
     http.post("/binnacle/v1/sweeps:archive_stale")
     assert client.archive_stale.await_args == call()
+
+
+@pytest.mark.parametrize("batch", [0, -5])
+def test_out_of_range_batch_is_rejected_as_a_problem_document(
+    http: TestClient, client: AsyncMock, batch: int
+) -> None:
+    """A negative `batch` hits the same bare `LIMIT %s` in
+    `postgres_store.py`'s `unembedded()`/`undiscovered()` (around lines 1423
+    and 1434) that a negative `limit` hits elsewhere -- must die at the HTTP
+    boundary rather than reach `binnacle.discover()`."""
+    response = http.post("/binnacle/v1/sweeps:discover", json={"batch": batch})
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["status"] == 422
+    client.discover.assert_not_awaited()
+
+
+def test_batch_of_one_is_accepted(http: TestClient, client: AsyncMock) -> None:
+    client.discover.return_value = DiscoverySummary(
+        decisions_processed=0,
+        suggestions_enqueued=0,
+        suggestions_deduped=0,
+        suggestions_below_floor=0,
+        promotions_recommended=0,
+    )
+    response = http.post("/binnacle/v1/sweeps:discover", json={"batch": 1})
+    assert response.status_code == 200
+    assert client.discover.await_args == call(batch=1)
 
 
 def test_malformed_batch_is_rejected_before_reaching_the_client(

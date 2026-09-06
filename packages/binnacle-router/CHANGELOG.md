@@ -25,3 +25,16 @@ All notable changes to `binnacle-router` are documented here. Format follows
   public surface (`packages/binnacle-router/pyproject.toml`
   `[tool.importlinter]`), resolving the dependency-boundary question
   `docs/OVERVIEW.md` §4 had left open.
+
+### Fixed
+
+- `limit`/`batch` on every paginated or batched endpoint (`GET /decisions`,
+  `GET /decisions/by_source`, `GET /queue`, `GET /changes`,
+  `GET /precedent`, `POST /sweeps:backfill_embeddings`,
+  `POST /sweeps:discover`) now reject `0` and negative values with a 422
+  problem document instead of reaching `binnacle-core` unchecked.
+  `limit=-5` previously surfaced as an unmapped 500 from PostgreSQL;
+  `limit=0` previously returned an empty page together with a
+  `next_cursor`, looping a client that pages on it forever. The upper
+  bound remains an open API-policy question — see the README's "Known
+  gaps" section.
