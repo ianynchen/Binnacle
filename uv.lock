@@ -110,7 +110,7 @@ wheels = [
 
 [[package]]
 name = "binnacle-core"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/binnacle-core" }
 dependencies = [
     { name = "pgvector" },
@@ -129,7 +129,7 @@ requires-dist = [
 
 [[package]]
 name = "binnacle-router"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/binnacle-router" }
 dependencies = [
     { name = "binnacle-core" },
