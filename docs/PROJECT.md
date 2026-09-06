@@ -24,7 +24,10 @@ statuses below reflect what is verified in `src/` as of that work landing
 
 | Entry | Status | Requirement |
 |---|---|---|
-| Package scaffold (empty package, no functional design yet) | planned | `docs/binnacle-router/REQUIREMENTS.md` |
+| REST surface: `make_router()` factory, `install_error_handlers()` RFC 7807 mapping, decisions (read + write), queue, domain registry, dashboard summaries, changes/precedent/export feeds, engine sweeps | delivered | `docs/binnacle-router/REQUIREMENTS.md` FR-1–FR-7; `packages/binnacle-router/CHANGELOG.md` `[Unreleased]` |
+| Import-linter contract restricting the package to `binnacle-core`'s public surface | delivered | `docs/binnacle-router/ARCHITECTURE.md` §5 |
+| Full per-operation OpenAPI response catalog (400/403/404/409/500) | deferred | `docs/binnacle-router/REQUIREMENTS.md` §5; the 422 declaration is delivered per FR-5.6 |
+| MCP surface | deferred | `docs/binnacle-router/REQUIREMENTS.md` §5 |
 
 ## binnacle-ui
 
