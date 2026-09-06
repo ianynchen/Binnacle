@@ -4,6 +4,14 @@ All notable changes to `binnacle-router` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- `__version__` is read from the installed distribution's metadata rather
+  than restated in `__init__.py`, so `pyproject.toml` is the single place
+  a version is declared and the two cannot drift.
+
 ## [0.2.0] - 2026-09-05
 
 ### Added
