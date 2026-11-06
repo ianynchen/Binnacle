@@ -33,4 +33,18 @@ statuses below reflect what is verified in `src/` as of that work landing
 
 | Entry | Status | Requirement |
 |---|---|---|
-| Package scaffold (one placeholder component, no functional design yet) | planned | `docs/binnacle-ui/REQUIREMENTS.md` |
+| Package scaffold (one placeholder component, no functional design yet) | **parked (2026-11-06)** | `docs/binnacle-ui/REQUIREMENTS.md`; Meridian `DEC-0006` |
+
+Meridian builds the UI for its MVP, including the read-and-manage views over an
+embedded Binnacle, so this package stays at its scaffold rather than being
+developed or deleted (Meridian `docs/decisions/DEC-0006-ui-ownership.md`). The
+option it preserves — a Binnacle UI runnable standalone *or* embedded in a host
+shell — is deliberate, and the shape already fits: a Vite library build
+emitting types, depending only on `react`/`react-dom`.
+
+Constraints recorded there, binding whenever this package is taken up: a
+component library with no app shell or router, no second design system,
+injected data access (this package's router over HTTP when standalone, a
+host-supplied client when embedded), no global singletons, and **no `Actor`
+constructed at the view layer** — the host attests the operator, and authority
+is never re-derived in a view.
