@@ -238,6 +238,17 @@ Consumer → capability map (each row traceable to the FRs below):
   excluded from current-status reads by default. Results are orderable by `sort`
   (`decided_at`, `recorded_at` (default), `last_touched_at` — the most recent
   transition, or `valid_until`) and `order` (`asc`/`desc`, default `desc`).
+- **FR-6.1a Multi-subject relevance (deferred, optional):** relevance SHOULD
+  accept a set of subjects, OR-matched with the same "or unscoped" fallback, so
+  one call answers "decisions about any of these entities". The motivating
+  caller is an embedding host that resolves an entity to its full set of
+  surface forms (aliases) and needs every decision recorded against any of
+  them — see Meridian `DEC-0003` and Portolan decision 0004, where Portolan
+  holds the correspondence between its node ids and these refs. **Deferred
+  deliberately:** N single-subject calls are correct, and this is a latency
+  optimisation to be implemented when per-entity fan-out measures as a
+  bottleneck, not before. Binnacle gains no dependency on Portolan either way;
+  refs remain self-contained strings and Binnacle MUST NOT store foreign ids.
   `sort="valid_until"` also **filters**, independently of `expiring_before`:
   decisions with no `valid_until` have no position in an expiry ordering, so
   they are excluded from the results (not merely sorted last) — the same
@@ -439,6 +450,21 @@ Consumer → capability map (each row traceable to the FRs below):
   `Embedder` adapter (binnacle stays model-ignorant behind the port; tests use a
   deterministic stub). A future model change is one dimension migration plus
   re-embedding the record — cheap at this scale.
+- **OQ-4** **Fleet embedding convention (open, 2026-11-06).** Where Binnacle is
+  embedded alongside Portolan (Meridian `DEC-0004`), the two corpora must share
+  one embedding model and dimension, or cross-corpus retrieval has to fuse two
+  incommensurable score scales. Portolan currently declares `vector(1536)`
+  against Binnacle's 768. The convention is to be **driven by Portolan's
+  language requirements** — its multilingual retrieval with canonical-English
+  summaries may need a model `nomic-embed-text-v1.5` does not serve — rather
+  than by defaulting to whichever shipped first. On Binnacle's side this is a
+  **config change, not code**: `embedding_dim` is templated into
+  `0001_schema.sql` at migration time and preflight-checked against the
+  column's typmod, so adopting a different dimension is one config value plus
+  re-embedding a small corpus. Settle it before either corpus has volume.
+  Related: one shared **as-of contract** — what "valid at T" means for a fact,
+  a decision, and a superseded thing — for which Binnacle's implementation is
+  the reference and Portolan conforms (Portolan decision 0004).
 
 ## 7. The Life of a Decision — a narrative walkthrough
 
