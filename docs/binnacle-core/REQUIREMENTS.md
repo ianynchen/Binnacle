@@ -102,6 +102,15 @@ policy.
   the audit trail; a decision's current `status` is a denormalized view of it. "Who
   recorded / recommended / promoted / declined / discarded / superseded, and when" are
   all answered from transitions — no per-action audit columns.
+- **FR-3.1a Whole and partial replacement (open —
+  [ADR 0002](../adr/0002-whole-and-partial-replacement.md)).** `superseded` means
+  **every ruling in a decision has been replaced**; a decision only ever
+  *partially* replaced stays `current`, because it remains the authority for its
+  untouched rulings. Binnacle implements whole replacement only, so a partial
+  replacement cannot currently be recorded without asserting a falsehood. This is
+  a **precondition for ingesting the fleet's own decision records**: all three
+  replacement relationships among them are partial and none is whole. ADR 0002
+  carries the definition from primitives and the minimum shape of the change.
 - **FR-3.2** Short-term statuses: `current | promoted | not_promoted | superseded |
   discarded | archived`. Long-term statuses: `current | superseded`. `supplemented`
   is not a status (FR-5.3). Temporal expiry is `valid_until`, orthogonal to status.
