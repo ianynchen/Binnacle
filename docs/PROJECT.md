@@ -29,6 +29,12 @@ statuses below reflect what is verified in `src/` as of that work landing
 | Full per-operation OpenAPI response catalog (400/403/404/409/500) | deferred | `docs/binnacle-router/REQUIREMENTS.md` §5; the 422 declaration is delivered per FR-5.6 |
 | MCP surface | deferred | `docs/binnacle-router/REQUIREMENTS.md` §5 |
 
+## Open model gaps
+
+| Item | Status | Reference |
+|---|---|---|
+| Partial replacement between decisions (`superseded` is whole-only) | **open** — precondition for ingesting the fleet's own records | `docs/adr/0002-whole-and-partial-replacement.md`; `docs/binnacle-core/REQUIREMENTS.md` FR-3.1a |
+
 ## binnacle-ui
 
 | Entry | Status | Requirement |
