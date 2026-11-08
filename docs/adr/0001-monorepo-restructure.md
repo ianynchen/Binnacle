@@ -1,3 +1,11 @@
+---
+id: "0001"
+title: "Restructure into a monorepo (binnacle-core, binnacle-router, binnacle-ui)"
+status: accepted
+date: 2026-09-04
+deciders: [human:ianynchen]
+---
+
 # ADR 0001: Restructure into a monorepo (binnacle-core, binnacle-router, binnacle-ui)
 
 Status: Accepted

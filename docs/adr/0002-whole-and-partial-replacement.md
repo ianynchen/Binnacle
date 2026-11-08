@@ -1,3 +1,11 @@
+---
+id: "0002"
+title: "Whole and partial replacement between decisions"
+status: accepted
+date: 2026-11-07
+deciders: [human:ianynchen]
+---
+
 # ADR 0002: Whole and partial replacement between decisions
 
 Status: Accepted
