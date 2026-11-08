@@ -102,15 +102,48 @@ policy.
   the audit trail; a decision's current `status` is a denormalized view of it. "Who
   recorded / recommended / promoted / declined / discarded / superseded, and when" are
   all answered from transitions — no per-action audit columns.
-- **FR-3.1a Whole and partial replacement (open —
-  [ADR 0002](../adr/0002-whole-and-partial-replacement.md)).** `superseded` means
+- **FR-3.1a Whole and partial replacement
+  ([ADR 0002](../adr/0002-whole-and-partial-replacement.md)).** `superseded` means
   **every ruling in a decision has been replaced**; a decision only ever
   *partially* replaced stays `current`, because it remains the authority for its
-  untouched rulings. Binnacle implements whole replacement only, so a partial
-  replacement cannot currently be recorded without asserting a falsehood. This is
-  a **precondition for ingesting the fleet's own decision records**: all three
-  replacement relationships among them are partial and none is whole. ADR 0002
-  carries the definition from primitives and the minimum shape of the change.
+  untouched rulings. The two relations are distinct links, never two shades of one:
+  - **`SUPERSEDES`** is whole replacement, unchanged. It moves the target to
+    `superseded` and keeps every invariant it has today (FR-5.2, FR-5.2a).
+  - **`PARTIALLY_SUPERSEDES`** is partial replacement. It carries a `part`
+    description — prose for a human, parsed by nothing (ADR 0002) — and is refused
+    without one. It leaves the target's status untouched.
+  Recorded by `partially_supersede(new_id, old_id, part, actor)`. It appends a
+  `partial_replacement_linked` transition that the status fold ignores, exactly as
+  `supplement_linked` does (FR-5.3): the event is audited because FR-3.1 makes
+  transitions the audit trail, and an unaudited lifecycle event would be a hole in
+  it — but status is a fold over transitions, and this action contributes nothing
+  to the fold. Authority follows supplement, not supersede: a long-term target
+  requires a human actor, and **no tier symmetry is required** (FR-5.2a governs
+  whole replacement only, because only whole replacement ends a decision's force).
+- **FR-3.1b Refusals on partial replacement.** Three, and only three. Each rejects
+  a statement that cannot be true, never a statement Binnacle merely dislikes:
+  - **Self-replacement.** A decision cannot replace part of itself; there is no
+    earlier ruling for it to have replaced.
+  - **Whole and partial between the same pair.** If B wholly replaces A, no ruling
+    of A is in force, so B cannot also replace *some* of them. Refused in either
+    order of recording.
+  - **A mutual partial pair.** A cannot replace part of B while B replaces part of
+    A. Replacement needs a ruling that *was in force* and a later decision taking a
+    different position; for two decisions authored together neither was ever in
+    force first, so the relation is undefined rather than rare, and at different
+    times only the later direction is possible. Dates do not enter the test — the
+    reciprocal shape is itself the falsehood.
+  Partial replacement of an already-`superseded` decision is **permitted**: a later
+  decision may genuinely replace a ruling of a dead one, and whether that is
+  worth recording is a judgment Binnacle does not make (FR-5.3).
+- **FR-3.1c Reads distinguish the two.** A caller must be able to ask *"is anything
+  here still in force?"* and get a true answer, so reads never collapse the two
+  links into one notion of replacement. A partially-replaced decision surfaces its
+  partial replacers and their `part` text alongside it, as a supplemented decision
+  surfaces its supplements (FR-5.3). Per ADR 0002, citing a partially-replaced
+  decision means one ruling is gone and **Binnacle cannot tell whether it was the
+  one relied upon**; a consumer surfacing this must say so rather than implying the
+  citation is broken.
 - **FR-3.2** Short-term statuses: `current | promoted | not_promoted | superseded |
   discarded | archived`. Long-term statuses: `current | superseded`. `supplemented`
   is not a status (FR-5.3). Temporal expiry is `valid_until`, orthogonal to status.
