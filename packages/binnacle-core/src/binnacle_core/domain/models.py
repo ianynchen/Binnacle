@@ -14,7 +14,9 @@ ActorKind = Literal["human", "agent", "engine"]
 Tier = Literal["short_term", "long_term"]
 ShortStatus = Literal["current", "promoted", "not_promoted", "superseded", "discarded", "archived"]
 LongStatus = Literal["current", "superseded"]
-LinkKind = Literal["SUPERSEDES", "SUPPLEMENTS", "PROMOTED_FROM", "CONFLICTS_WITH"]
+LinkKind = Literal[
+    "SUPERSEDES", "PARTIALLY_SUPERSEDES", "SUPPLEMENTS", "PROMOTED_FROM", "CONFLICTS_WITH"
+]
 QueueKind = Literal["promote", "link", "supersede", "conflict"]
 RefRole = Literal["subject", "evidence"]
 TransitionAction = Literal[
@@ -24,6 +26,7 @@ TransitionAction = Literal[
     "declined",
     "discarded",
     "superseded",
+    "partial_replacement_linked",
     "supplement_linked",
     "archived",
     "reactivated",
@@ -195,7 +198,24 @@ class Decision:
 
 @dataclass(frozen=True)
 class CompactDecision:
-    """A compact representation of a decision for listing."""
+    """A compact representation of a decision for listing.
+
+    `partially_replaced` is true when at least one later decision replaced part
+    of this one (FR-3.1c). The flag travels with the compact projection, and the
+    `part` text deliberately does not: naming what was replaced is the full
+    read's job (`history().partial_replacers`), while a listing only has to stop
+    short of implying nothing was replaced.
+
+    It is carried here even though supplements are NOT (FR-5.3), because the two
+    relations are asymmetric: a supplement **adds**, so a consumer that misses
+    one merely lacks context, while a partial replacement **subtracts**, so a
+    consumer that misses one relies on a ruling that is gone — with a `status`
+    of `current` that is true and still misleading. That is the exact failure
+    FR-3.1c exists to prevent.
+
+    No default: a store that omitted the flag would report "nothing here was
+    replaced", which is the misleading answer rather than an absent one.
+    """
 
     id: UUID
     domain: str
@@ -203,6 +223,7 @@ class CompactDecision:
     status: ShortStatus | LongStatus
     outcome_truncated: str
     subject_refs: list[Ref]
+    partially_replaced: bool
 
 
 @dataclass(frozen=True)
@@ -240,11 +261,39 @@ class Transition:
 
 @dataclass(frozen=True)
 class Link:
-    """A link between two decisions."""
+    """A link between two decisions.
+
+    `part` is the replaced-part description a `PARTIALLY_SUPERSEDES` link
+    carries (FR-3.1a): prose naming which ruling of `to_id` the decision
+    `from_id` replaced, written for a human and parsed by nothing (ADR 0002).
+    Stored stripped of leading and trailing whitespace (never interior), so the
+    value a reader compares is the value the blank-part refusal ran against.
+    It is `None` on every other kind, and never `None` on this one — the
+    `links` CHECK constraint (migration 0005) enforces both directions, so a
+    partial-replacement link with no part cannot exist in the database.
+    """
 
     from_id: UUID
     to_id: UUID
     kind: LinkKind
+    part: str | None = None
+
+
+@dataclass(frozen=True)
+class PartialReplacement:
+    """One decision that partially replaced another, paired with the `part` it
+    replaced (FR-3.1a/3.1c) — the shape `HistoryRecord.partial_replacers` uses
+    so a caller reading "something here was replaced" can read *what* in the
+    same breath, instead of joining `links` back by id.
+
+    Per ADR 0002, the presence of one of these means a ruling of the subject
+    decision is gone and Binnacle **cannot tell whether it was the one a
+    citation relied upon**; a consumer surfacing it must say so rather than
+    implying the whole decision has fallen (FR-3.1c).
+    """
+
+    decision: Decision
+    part: str
 
 
 @dataclass(frozen=True)
@@ -311,10 +360,17 @@ class HistoryRecord:
     """A decision's full record (FR-6.2): content and refs (on `decision`),
     transitions in order, every link touching the decision, both supersession
     chains (recursive over `links` kind SUPERSEDES), supplements — decisions
-    that supplement this one (FR-5.3) — and conflicts — decisions this one has
-    an acknowledged `CONFLICTS_WITH` link with, from `resolve_conflict`'s accept
-    path (FR-7.2). Includes archived/discarded entries throughout; history hides
-    nothing.
+    that supplement this one (FR-5.3) — `partial_replacers` — decisions that
+    replaced only *part* of this one, each with the part it replaced
+    (FR-3.1a/3.1c) — and conflicts — decisions this one has an acknowledged
+    `CONFLICTS_WITH` link with, from `resolve_conflict`'s accept path (FR-7.2).
+    Includes archived/discarded entries throughout; history hides nothing.
+
+    `predecessors`/`successors` are whole replacement ONLY: a partial replacer
+    is never a successor, because the subject is still the authority for every
+    ruling it did not touch (FR-3.1a). The two relations are reported in
+    separate fields precisely so a caller can ask "is anything here still in
+    force?" and get a true answer (FR-3.1c).
     """
 
     decision: Decision
@@ -323,6 +379,7 @@ class HistoryRecord:
     predecessors: list[Decision]
     successors: list[Decision]
     supplements: list[Decision]
+    partial_replacers: list[PartialReplacement]
     conflicts: list[Decision]
 
 

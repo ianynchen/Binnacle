@@ -548,6 +548,7 @@ class TestCompactDecision:
             status="current",
             outcome_truncated="Chose PostgreSQL",
             subject_refs=[subject_ref],
+            partially_replaced=False,
         )
         assert decision.id == decision_id
         assert decision.domain == "database"
@@ -699,6 +700,7 @@ class TestCandidatePair:
             status="current",
             outcome_truncated="Chose PostgreSQL",
             subject_refs=[],
+            partially_replaced=False,
         )
         other = CompactDecision(
             id=decision_id2,
@@ -707,6 +709,7 @@ class TestCandidatePair:
             status="current",
             outcome_truncated="Chose MySQL",
             subject_refs=[],
+            partially_replaced=False,
         )
         pair = CandidatePair(decision=decision, other=other, similarity=0.92)
         assert pair.decision == decision
@@ -747,6 +750,7 @@ class TestFrozenImmutability:
                     status="current",
                     outcome_truncated="test",
                     subject_refs=[],
+                    partially_replaced=False,
                 ),
                 "domain",
             ),
@@ -787,6 +791,7 @@ class TestFrozenImmutability:
                         status="current",
                         outcome_truncated="test",
                         subject_refs=[],
+                        partially_replaced=False,
                     ),
                     other=CompactDecision(
                         id=uuid4(),
@@ -795,6 +800,7 @@ class TestFrozenImmutability:
                         status="current",
                         outcome_truncated="test",
                         subject_refs=[],
+                        partially_replaced=False,
                     ),
                     similarity=0.5,
                 ),

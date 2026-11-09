@@ -102,15 +102,60 @@ policy.
   the audit trail; a decision's current `status` is a denormalized view of it. "Who
   recorded / recommended / promoted / declined / discarded / superseded, and when" are
   all answered from transitions — no per-action audit columns.
-- **FR-3.1a Whole and partial replacement (open —
-  [ADR 0002](../adr/0002-whole-and-partial-replacement.md)).** `superseded` means
+- **FR-3.1a Whole and partial replacement
+  ([ADR 0002](../adr/0002-whole-and-partial-replacement.md)).** `superseded` means
   **every ruling in a decision has been replaced**; a decision only ever
   *partially* replaced stays `current`, because it remains the authority for its
-  untouched rulings. Binnacle implements whole replacement only, so a partial
-  replacement cannot currently be recorded without asserting a falsehood. This is
-  a **precondition for ingesting the fleet's own decision records**: all three
-  replacement relationships among them are partial and none is whole. ADR 0002
-  carries the definition from primitives and the minimum shape of the change.
+  untouched rulings. The two relations are distinct links, never two shades of one:
+  - **`SUPERSEDES`** is whole replacement, unchanged. It moves the target to
+    `superseded` and keeps every invariant it has today (FR-5.2, FR-5.2a).
+  - **`PARTIALLY_SUPERSEDES`** is partial replacement. It carries a `part`
+    description — prose for a human, parsed by nothing (ADR 0002) — and is refused
+    without one, blank and whitespace-only included. That is input validation, not
+    one of FR-3.1b's refusals: an absent part makes the link unreadable rather than
+    false. It leaves the target's status untouched.
+  Recorded by `partially_supersede(new_id, old_id, part, actor)`. It appends a
+  `partial_replacement_linked` transition that the status fold ignores, exactly as
+  `supplement_linked` does (FR-5.3): the event is audited because FR-3.1 makes
+  transitions the audit trail, and an unaudited lifecycle event would be a hole in
+  it — but status is a fold over transitions, and this action contributes nothing
+  to the fold. Authority follows supplement, not supersede: a long-term target
+  requires a human actor, and **no tier symmetry is required** (FR-5.2a governs
+  whole replacement only, because only whole replacement ends a decision's force).
+- **FR-3.1b Refusals on partial replacement.** Three, and only three. Each rejects
+  a statement that cannot be true, never a statement Binnacle merely dislikes:
+  - **Self-replacement.** A decision cannot replace part of itself; there is no
+    earlier ruling for it to have replaced.
+  - **Whole and partial between the same pair, in either orientation.** If B wholly
+    replaces A, no ruling of A is in force, so B cannot also replace *some* of them.
+    Nor can A replace part of B: B wholly replacing A puts B after A, while A
+    replacing part of B would put A after B. Refused in both orientations and in
+    either order of recording — so `supersede` carries the check too, not only
+    `partially_supersede`.
+  - **A mutual partial pair.** A cannot replace part of B while B replaces part of
+    A. Replacement needs a ruling that *was in force* and a later decision taking a
+    different position; for two decisions authored together neither was ever in
+    force first, so the relation is undefined rather than rare, and at different
+    times only the later direction is possible. Dates do not enter the test — the
+    reciprocal shape is itself the falsehood.
+  Partial replacement of an already-`superseded` decision is **permitted**: a later
+  decision may genuinely replace a ruling of a dead one, and whether that is
+  worth recording is a judgment Binnacle does not make (FR-5.3).
+- **FR-3.1c Reads distinguish the two.** A caller must be able to ask *"is anything
+  here still in force?"* and get a true answer, so reads never collapse the two
+  links into one notion of replacement. A partially-replaced decision surfaces its
+  partial replacers and their `part` text alongside it, as a supplemented decision
+  surfaces its supplements (FR-5.3). Per ADR 0002, citing a partially-replaced
+  decision means one ruling is gone and **Binnacle cannot tell whether it was the
+  one relied upon**; a consumer surfacing this must say so rather than implying the
+  citation is broken.
+  Reads returning the compact projection (`precedent`, `relevant`) carry a boolean
+  marking the decision as partially replaced — the flag, not the `part` text, which
+  belongs to the full read. Supplements are deliberately absent from those reads
+  (FR-5.3) and partial replacement is not, because the two are asymmetric:
+  a missing supplement costs a consumer extra context, while a missing partial
+  replacement lets it rely on a ruling that is gone. A `current` status alone would
+  then be true and still misleading, which is the failure FR-3.1c exists to prevent.
 - **FR-3.2** Short-term statuses: `current | promoted | not_promoted | superseded |
   discarded | archived`. Long-term statuses: `current | superseded`. `supplemented`
   is not a status (FR-5.3). Temporal expiry is `valid_until`, orthogonal to status.
@@ -172,8 +217,8 @@ policy.
   `archived` and `not_promoted` are always revivable.
 
 ### FR-5 Relationships between decisions
-- **FR-5.1** Relationship kinds: `SUPERSEDES`, `SUPPLEMENTS`, `CONFLICTS_WITH`,
-  plus the internal `PROMOTED_FROM` provenance link. Relationships are
+- **FR-5.1** Relationship kinds: `SUPERSEDES`, `PARTIALLY_SUPERSEDES` (FR-3.1a),
+  `SUPPLEMENTS`, `CONFLICTS_WITH`, plus the internal `PROMOTED_FROM` provenance link. Relationships are
   established by: (a) declaration at recording time, (b) confirmation of an
   engine suggestion, (c) post-hoc human curation, (d) `resolve_conflict`'s
   accept path (FR-5.4). Adding a relationship is an append.

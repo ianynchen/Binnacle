@@ -356,7 +356,9 @@ class LifecycleEngine:
             DecisionNotFound: either id does not exist.
             AuthorityViolation: `old_id` is long-term and `actor.kind != 'human'`.
             InvalidTransition: the tiers don't match, `old_id` is not
-                supersedable, or the link would create a cycle.
+                supersedable, the link would create a cycle, or the pair
+                already carries a partial replacement in either orientation
+                (FR-3.1b: whole and partial cannot both hold).
         """
         old_peek = await self._store.get_decision(old_id)
         if old_peek is None:
@@ -370,8 +372,91 @@ class LifecycleEngine:
             new_row = _require(locked, new_id)
             self._validate_supersede(old_row, new_row, "supersede")
             await self._check_acyclic(tx, old_id, new_id, old_row.status, "supersede")
+            await self._check_no_partial_replacement(
+                tx, new_id, old_id, old_row.status, "supersede"
+            )
             await self._execute_supersede(tx, new_id, old_id, actor, item_id=None)
             await self._void_open_items(tx, old_id, actor)
+
+    async def partially_supersede(
+        self, new_id: UUID, old_id: UUID, part: str, actor: Actor
+    ) -> None:
+        """Link `new_id` as replacing only `part` of `old_id` (FR-3.1a): NO status
+        change on either side — `old_id` keeps exactly the status it held, because
+        it remains the authority for every ruling `new_id` did not touch. `part`
+        names what was replaced, in prose for a human to read; nothing parses it
+        (ADR 0002). Authority follows `supplement` rather than `supersede`: a
+        long-term `old_id` requires a human actor (I-2), and no tier symmetry is
+        required, because FR-5.2a governs whole replacement only — only whole
+        replacement ends a decision's force.
+
+        An already-`superseded` `old_id` is accepted: a later decision may
+        genuinely replace a ruling of a dead one, and whether that is worth
+        recording is a judgment Binnacle does not make (FR-3.1b, FR-5.3).
+
+        Raises:
+            DecisionNotFound: either id does not exist.
+            AuthorityViolation: `old_id` is long-term and `actor.kind != 'human'`.
+            ValueError: `part` is blank or whitespace-only (it is stripped of
+                leading and trailing whitespace first, and stored stripped, so
+                the value validated is the value persisted). This is input
+                validation, NOT one of FR-3.1b's three refusals: those reject
+                statements that cannot be *true*, whereas a part naming nothing
+                makes the link **unreadable** by the human the prose exists for
+                (FR-3.1a) — a different failure, so the closed set stays closed.
+                Raised before anything is read or locked.
+            InvalidTransition: the claim cannot be true (FR-3.1b) — `new_id` is
+                `old_id`, the two already stand in a WHOLE replacement in either
+                orientation, or `old_id` already replaces part of `new_id`. See
+                `_validate_partial_replacement` for each one's reasoning.
+        """
+        # Validation and storage must agree on what the value IS: a `part` that
+        # passes a stripped check and then persists unstripped means the thing
+        # validated is not the thing stored, and every later reader -- a diff, an
+        # export, a UI, a human comparing two records -- sees a value the
+        # invariant never ran against. Edges only: the prose's interior shape is
+        # the caller's business, not ours.
+        part = part.strip()
+        if not part:
+            msg = "part must name the replaced ruling; a blank part makes the link unreadable"
+            raise ValueError(msg)
+        old_peek = await self._store.get_decision(old_id)
+        if old_peek is None:
+            raise DecisionNotFound(str(old_id))
+        if old_peek.tier == "long_term" and actor.kind != "human":
+            msg = "partially superseding a long-term decision requires a human actor"
+            raise AuthorityViolation(msg)
+        async with self._store.transaction() as tx:
+            # Same single batched, internally-sorted `lock_decisions` call (and
+            # so the same global lock order) every other two-decision act uses.
+            locked = await self._store.lock_decisions(tx, [new_id, old_id])
+            old_row = _require(locked, old_id)
+            _require(locked, new_id)
+            await self._validate_partial_replacement(tx, new_id, old_id, old_row.status)
+            # Both transitions carry `new_status=None`, which is what keeps this
+            # act out of the status fold: `status` is the last non-null
+            # `new_status` in the log (I-1), so an action that never writes one
+            # cannot move either side (FR-3.1a). No `_void_open_items` either —
+            # nothing left `current`, so nothing's pending item went stale.
+            await self._store.insert_link(tx, new_id, old_id, "PARTIALLY_SUPERSEDES", part=part)
+            await self._store.apply_transition(
+                tx,
+                old_id,
+                "partial_replacement_linked",
+                actor.as_str(),
+                None,
+                {"target": str(new_id)},
+                None,
+            )
+            await self._store.apply_transition(
+                tx,
+                new_id,
+                "partial_replacement_linked",
+                actor.as_str(),
+                None,
+                {"target": str(old_id)},
+                None,
+            )
 
     async def supplement(self, new_id: UUID, old_id: UUID, actor: Actor) -> None:
         """Link `new_id` as supplementing `old_id` (FR-5.3): no status change on
@@ -461,8 +546,9 @@ class LifecycleEngine:
             InvalidTransition: the item is not a `link`/`supersede` item (a
                 `conflict` item must go through `resolve_conflict` instead),
                 its target is missing, or (for `supersede`) the tiers don't
-                match, the target isn't supersedable, or it would create a
-                cycle.
+                match, the target isn't supersedable, it would create a
+                cycle, or the two are already a partial-replacement pair
+                (FR-3.1b).
             DecisionNotFound: the item's decision or target does not exist.
         """
         if actor.kind != "human":
@@ -489,6 +575,9 @@ class LifecycleEngine:
             if item.kind == "supersede":
                 self._validate_supersede(old_row, new_row, "apply_item")
                 await self._check_acyclic(tx, old_id, new_id, old_row.status, "apply_item")
+                await self._check_no_partial_replacement(
+                    tx, new_id, old_id, old_row.status, "apply_item"
+                )
                 await self._execute_supersede(tx, new_id, old_id, actor, item_id=item_id)
             else:
                 await self._execute_supplement(tx, new_id, old_id, actor, item_id=item_id)
@@ -547,8 +636,9 @@ class LifecycleEngine:
             ItemNotFound: `item_id` does not exist.
             ItemAlreadyResolved: `item_id` was already resolved.
             InvalidTransition: the item is not a `conflict` item; a same-tier
-                superseded side is not in a supersedable status or would
-                create a cycle (`winner_id` path); or a long-term winner's
+                superseded side is not in a supersedable status, would
+                create a cycle, or is already the winner's partial-replacement
+                target (FR-3.1b) (`winner_id` path); or a long-term winner's
                 short-term loser is not in a discardable status.
             DecisionNotFound: the item's decision or target does not exist.
             UnknownDomain: `refined.domain` is not registered.
@@ -594,6 +684,9 @@ class LifecycleEngine:
                     self._validate_supersede(loser_row, winner_row, "resolve_conflict")
                     await self._check_acyclic(
                         tx, loser_id, winner_id, loser_row.status, "resolve_conflict"
+                    )
+                    await self._check_no_partial_replacement(
+                        tx, winner_id, loser_id, loser_row.status, "resolve_conflict"
                     )
                     await self._execute_supersede(tx, winner_id, loser_id, actor, item_id=item_id)
                     await self._void_open_items(tx, loser_id, actor)
@@ -787,6 +880,88 @@ class LifecycleEngine:
         predecessors = await self._store.predecessor_chain(tx, old_id)
         if new_id in predecessors:
             msg = "would create a supersession cycle"
+            raise InvalidTransition(old_status, action, msg)
+
+    async def _validate_partial_replacement(
+        self, tx: Tx, new_id: UUID, old_id: UUID, old_status: str
+    ) -> None:
+        """FR-3.1b's three refusals, each rejecting a statement that *cannot be
+        true* rather than one Binnacle merely dislikes:
+
+        1. **Self-replacement.** To replace a ruling is for a *later* decision to
+           take a different position on the question that ruling answered; a
+           decision has no earlier ruling of its own to have replaced.
+        2. **Whole and partial between the same pair, in either orientation.**
+           If `new_id` already wholly replaces `old_id`, then no ruling of
+           `old_id` is in force, so there is no longer any ruling of it left to
+           replace in part. And if `old_id` wholly replaces `new_id`, the claim
+           is impossible the other way round: `old_id` wholly replacing `new_id`
+           puts `old_id` after `new_id`, while `new_id` replacing part of
+           `old_id` would put `new_id` after `old_id`. Orientation is therefore
+           NOT part of this test — any `SUPERSEDES` link between the pair
+           refuses it.
+        3. **A mutual partial pair.** Replacement needs a ruling that *was in
+           force* and a later decision taking a different position on it. For
+           two decisions authored together, neither was ever in force first, so
+           the relation is undefined rather than rare; at different times only
+           the later direction is possible. **Dates deliberately do not enter
+           this test** — the reciprocal shape is itself the falsehood, so a pair
+           whose timestamps happen to differ is refused for the same reason as
+           one whose timestamps match. Do not "fix" this by comparing
+           `decided_at`: that reinstates the hole for every pair recorded out of
+           order, and a decision's dates are caller-supplied (FR-1.7) anyway.
+
+        Reads the existing links through `links_between` (tx-scoped) rather than
+        `history` (a second pooled connection), for the same pool-exhaustion
+        reason as `_check_acyclic`'s `predecessor_chain`: this always runs while
+        the caller already holds both row locks inside its own open transaction.
+        """
+        if new_id == old_id:
+            msg = "a decision cannot replace part of itself"
+            raise InvalidTransition(old_status, "partially_supersede", msg)
+        links = await self._store.links_between(tx, new_id, old_id)
+        if any(link.kind == "SUPERSEDES" for link in links):
+            msg = (
+                "the two already stand in a whole replacement, which orders them and "
+                "leaves no ruling of the replaced one in force to be replaced in part"
+            )
+            raise InvalidTransition(old_status, "partially_supersede", msg)
+        if any(link.kind == "PARTIALLY_SUPERSEDES" and link.from_id == old_id for link in links):
+            msg = (
+                "the old decision already replaces part of the new one; neither of a "
+                "reciprocal pair was ever in force before the other"
+            )
+            raise InvalidTransition(old_status, "partially_supersede", msg)
+
+    async def _check_no_partial_replacement(
+        self, tx: Tx, new_id: UUID, old_id: UUID, old_status: str, action: str
+    ) -> None:
+        """FR-3.1b's whole-and-partial refusal in the *other* order of recording:
+        the pair already carries a partial replacement, and whole replacement is
+        now claimed over it. Same single falsehood as
+        `_validate_partial_replacement`'s second refusal, so it is refused in
+        **either orientation** too — `new_id` cannot both have left some of
+        `old_id`'s rulings in force and have replaced them all, and `old_id`
+        replacing part of `new_id` orders the two the opposite way from `new_id`
+        wholly replacing `old_id`. It must be refused whichever link is recorded
+        first, and that means every act that writes a SUPERSEDES link between two
+        PRE-EXISTING decisions checks it: `supersede`, `apply_item`, and
+        `resolve_conflict`'s winner path, i.e. exactly where `_check_acyclic` is
+        already called.
+
+        `record`'s declared-`supersedes` path and `_execute_pending_claims` need
+        no check: their `new_id` is a freshly minted row with no links at all, so
+        it cannot already partially replace anything — the same reasoning
+        `_execute_pending_claims` already relies on for acyclicity, and it holds
+        as long as neither path can ever supersede FROM a pre-existing id.
+
+        Tx-scoped for the same pool-exhaustion reason as `_check_acyclic`."""
+        links = await self._store.links_between(tx, new_id, old_id)
+        if any(link.kind == "PARTIALLY_SUPERSEDES" for link in links):
+            msg = (
+                "the two already stand in a partial replacement, which leaves rulings in "
+                "force and orders them; neither can then wholly replace the other"
+            )
             raise InvalidTransition(old_status, action, msg)
 
     async def _execute_supersede(

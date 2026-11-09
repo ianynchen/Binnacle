@@ -53,6 +53,7 @@ rows — a pending item never changes any status (I-4).
 | decline | human | source→`not_promoted` + queue resolve + transition with reason |
 | discard | recorder-of-own-ST or human | →`discarded` + transition (FR-3.3) + auto-`voided` resolution of open queue items |
 | supersede | actor; human AND long_term successor required if target is long_term (FR-5.2a) | link + target→`superseded` + transitions on both + auto-`voided` resolution of the target's open queue items |
+| partially_supersede | actor; human if target is long_term (no tier symmetry — FR-3.1a) | `PARTIALLY_SUPERSEDES` link carrying `part` + `partial_replacement_linked` transitions; NO status change, the target stays whatever it was (FR-3.1a). Refuses self-replacement, a whole-and-partial pair (either order of recording), and a mutual partial pair (FR-3.1b) |
 | supplement | actor; human if target is long_term | link + `supplement_linked` transitions; NO status change (FR-5.3) |
 | archive / reactivate | engine (sweep) / any-on-own, human-on-any | status flip + transition |
 | apply-item | human (always, since suggested links/supersedes may touch LT) | executes the suggested link/supersede + queue resolve + transitions (`payload.item_id`); refuses `conflict` items (`InvalidTransition` pointing to resolve-conflict) |
@@ -73,6 +74,14 @@ rows — a pending item never changes any status (I-4).
   store's paired `apply_transition` only.
 - **Acyclicity**: supersede walks the successor chain (recursive CTE) before
   linking; a cycle raises `InvalidTransition`.
+- **Whole vs partial replacement (FR-3.1b)**: wherever acyclicity is checked,
+  the engine also checks that the same pair does not already carry the other
+  replacement kind — so the forbidden combination is refused in either order of
+  recording, through `supersede`, `apply-item`, or `resolve-conflict` alike.
+  `record`'s declared `supersedes` and pending-claim execution are exempt by
+  construction (their `from` side is a freshly minted id with no links).
+  Status-neutral acts contribute nothing to the fold: `partial_replacement_linked`
+  and `supplement_linked` always write `new_status = NULL`.
 - **Refined promotion**: validates the refined `NewDecision` like any recording
   (registry, refs), forces `tier=long_term`, `recorded_by=` the promoting human;
   sources must all be short_term `current` (or `not_promoted` — re-recommended

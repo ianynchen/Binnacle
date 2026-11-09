@@ -22,6 +22,7 @@ from binnacle_core.domain.models import (
     DomainSummary,
     ExportBundle,
     HistoryRecord,
+    Link,
     LinkKind,
     Page,
     PromotionAssessment,
@@ -186,8 +187,36 @@ class StorePort(Protocol):
         from the transition fold)."""
         ...
 
-    async def insert_link(self, tx: Tx, from_id: UUID, to_id: UUID, kind: LinkKind) -> None:
-        """Insert one `links` row. Idempotent: repeating an existing (from, kind, to) is a no-op."""
+    async def insert_link(
+        self, tx: Tx, from_id: UUID, to_id: UUID, kind: LinkKind, *, part: str | None = None
+    ) -> None:
+        """Insert one `links` row. Idempotent: repeating an existing (from, kind, to) is a no-op.
+
+        `part` is required for `kind='PARTIALLY_SUPERSEDES'` and must be omitted
+        for every other kind (FR-3.1a): the column is keyword-only and optional
+        so the four part-less kinds' call sites read exactly as before.
+
+        Raises:
+            Exception: the driver's integrity error when `part` and `kind`
+                disagree — the `links_part_iff_partial` CHECK (migration 0005)
+                is the authority on that pairing, not this signature.
+        """
+        ...
+
+    async def links_between(self, tx: Tx, a: UUID, b: UUID) -> list[Link]:
+        """Every `links` row connecting `a` and `b`, in EITHER direction, read on
+        `tx`'s own connection.
+
+        Exists so the Lifecycle Engine's replacement-consistency refusals
+        (FR-3.1b: no whole-and-partial pair, no mutual partial pair) can run
+        INSIDE the act's already-open transaction, for the same
+        pool-exhaustion reason as `predecessor_chain` and `transitions_for`:
+        borrowing a second pooled connection per call while the act's own
+        transaction already holds one exhausts a small pool (`PoolTimeout`)
+        well before any row lock would contend. Returns both directions in one
+        read because both refusals are about the unordered pair — the caller
+        filters on `from_id` to tell "B replaces part of A" from the reverse.
+        """
         ...
 
     async def insert_refs(self, tx: Tx, decision_id: UUID, refs: Sequence[Ref]) -> None:
@@ -296,7 +325,8 @@ class StorePort(Protocol):
         """`get_many`'s compact projection (docs/binnacle-core/components/04's "Compact
         projections are SQL-level" contract point): the same id-list lookup,
         but selecting only the compact columns with `outcome` truncated to
-        `compact_chars` in SQL — no full-row fetch then trim. Exists for
+        `compact_chars` and `partially_replaced` computed (FR-3.1c) in SQL — no
+        full-row fetch then trim. Exists for
         `precedent()`, which hydrates a `knn`-picked id list rather than
         scanning a filtered range. Ids with no matching row are simply absent;
         result order is unspecified (callers that care, like `precedent()`,
@@ -398,7 +428,8 @@ class StorePort(Protocol):
         build the next cursor from what it received.
 
         Projection: `compact_chars` an `int` returns `Page[CompactDecision]` with
-        `outcome` truncated to that length **in SQL** (no fetch-then-trim, FR-6.7);
+        `outcome` truncated to that length and `partially_replaced` computed
+        (FR-3.1c) **in SQL** (no fetch-then-trim, FR-6.7);
         `compact_chars=None` returns the full `Page[Decision]`. The two
         `@overload`s above narrow the return type at each call site on a
         literal/omitted vs. `None` `compact_chars`, so callers get
@@ -448,9 +479,11 @@ class StorePort(Protocol):
 
     async def history(self, decision_id: UUID) -> HistoryRecord:
         """FR-6.2: the decision's full record — content, refs, transitions (in
-        order), every link touching it, both supersession chains (recursive over
-        `links` kind SUPERSEDES), and its supplements. Includes archived/discarded
-        decisions throughout (history hides nothing).
+        order), every link touching it (each `PARTIALLY_SUPERSEDES` one carrying
+        its `part`), both supersession chains (recursive over `links` kind
+        SUPERSEDES — whole replacement only), its supplements, and its partial
+        replacers paired with the part each replaced (FR-3.1c). Includes
+        archived/discarded decisions throughout (history hides nothing).
 
         Raises:
             DecisionNotFound: no decision has `decision_id`.

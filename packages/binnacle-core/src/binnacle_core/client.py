@@ -127,6 +127,24 @@ class Binnacle:
         `LifecycleEngine.supersede`."""
         await self._engine.supersede(new_id, old_id, actor)
 
+    async def partially_supersede(
+        self, new_id: UUID, old_id: UUID, part: str, actor: Actor
+    ) -> None:
+        """Link `new_id` as replacing only `part` of `old_id` (FR-3.1a): `old_id`
+        keeps its status, staying the authority for the rulings `new_id` left in
+        force. See `LifecycleEngine.partially_supersede`.
+
+        Raises:
+            ValueError: `part` is blank or whitespace-only (FR-3.1a input
+                validation — a part naming nothing leaves the link unreadable).
+            DecisionNotFound: either id does not exist.
+            AuthorityViolation: `old_id` is long-term and `actor.kind != 'human'`.
+            InvalidTransition: the claim cannot be true (FR-3.1b) — self-replacement,
+                a whole-and-partial pair in either orientation, or a mutual partial
+                pair.
+        """
+        await self._engine.partially_supersede(new_id, old_id, part, actor)
+
     async def supplement(self, new_id: UUID, old_id: UUID, actor: Actor) -> None:
         """Link `new_id` as supplementing `old_id` (FR-5.3). See
         `LifecycleEngine.supplement`."""

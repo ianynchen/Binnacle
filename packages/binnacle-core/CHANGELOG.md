@@ -4,6 +4,60 @@ All notable changes to `binnacle-core` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
+## [0.6.0] - 2026-11-08
+
+### Added
+
+- **Partial replacement between decisions** (FR-3.1a/3.1b/3.1c,
+  [ADR 0002](../../docs/adr/0002-whole-and-partial-replacement.md)):
+  `Binnacle.partially_supersede(new_id, old_id, part, actor)` records that a
+  later decision replaced only SOME of an earlier decision's rulings. It links
+  the two with the new `PARTIALLY_SUPERSEDES` kind (carrying `part`, prose
+  naming what was replaced) and appends `partial_replacement_linked`
+  transitions, changing no status: the target remains the authority for every
+  ruling the replacer left in force, so it stays `current` and stays in
+  current-status reads. Previously the only way to record such a relationship
+  was `supersede`, which asserts that the whole decision has fallen.
+- `links.part` and the `links_part_iff_partial` CHECK constraint (migration
+  `0005_link_part`), so a partial-replacement link with no part is refused by
+  the database, not only by the Lifecycle Engine.
+- `HistoryRecord.partial_replacers` — each partial replacer paired with the
+  part it replaced (new public type `PartialReplacement`). `Link` gains `part`
+  (`None` for every other kind), so `history()` and `export()` carry it.
+  Supersession chains (`predecessors`/`successors`) stay whole-replacement
+  only, so a caller can still ask "is anything here in force?" truthfully.
+- `StorePort.links_between(tx, a, b)`, a tx-scoped read of the links between
+  two decisions, for the refusal checks below.
+- `CompactDecision.partially_replaced` (FR-3.1c): every compact read
+  (`relevant()`, `precedent()`, `changes()`, `by_source()`,
+  `aging_unrecommended()`) now reports whether a later decision replaced part
+  of the listed one, computed in SQL alongside `outcome_truncated`. The flag,
+  not the `part` text, which belongs to `history()`. Supplements are absent
+  from these reads and this is not, because the relations are asymmetric: a
+  supplement adds, so missing it costs a consumer context, while a partial
+  replacement subtracts, so missing it means relying on a ruling that is gone
+  behind a `current` status that is true and still misleading.
+
+### Changed
+
+- `supersede` (and `apply_item`/`resolve_conflict`'s winner path) now raise
+  `InvalidTransition` when the pair already carries a partial-replacement link
+  — the whole-and-partial refusal applies in either order of recording.
+- `StorePort.insert_link` takes an optional keyword-only `part`. Existing call
+  sites are unaffected.
+- `partially_supersede` raises `ValueError` for a blank or whitespace-only
+  `part` (FR-3.1a). This is input validation, not one of FR-3.1b's three
+  refusals: those reject statements that cannot be true, while a part naming
+  nothing leaves the link unreadable. The `part` is stored stripped of leading
+  and trailing whitespace (never interior) so that the value persisted is the
+  value the refusal ran against.
+- The whole-and-partial refusal applies in **either orientation**, not only in
+  either order of recording (FR-3.1b): A wholly replacing B and B replacing
+  part of A order the pair in opposite directions, so both cannot hold.
+- `HistoryRecord` and `CompactDecision` each gained a required field
+  (`partial_replacers`, `partially_replaced`). Keyword construction is
+  unaffected; positional construction of these two read models breaks.
+
 ## [0.5.0] - 2026-09-05
 
 ### Added

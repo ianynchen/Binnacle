@@ -35,6 +35,7 @@ def _compact_decision(decision_id: object) -> CompactDecision:
         subject_refs=[
             Ref(role="subject", kind="component", identifier="portolan-ingest", note=None)
         ],
+        partially_replaced=False,
     )
 
 

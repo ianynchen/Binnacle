@@ -24,11 +24,13 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
 - **relevant()** — filters: domains (default all), status set (default
   `current`), tier, subject (returns subject-match OR unscoped, FR-6.1), `as_of`
   over `valid_from/until`, lexical `text` filter, `include_archived`. Projection
-  `compact` (id, domain, tier, status, outcome one-liner, subject refs) or
-  `full`. Deterministic ordering (recency, then id).
+  `compact` (id, domain, tier, status, outcome one-liner, subject refs,
+  `partially_replaced`) or `full`. Deterministic ordering (recency, then id).
 - **history()** — the full record of one decision: content, refs, transitions in
-  order, links, and both chains (predecessors/successors via recursive CTE) plus
-  supplements and conflicts — decisions this one has an acknowledged
+  order, links (each `PARTIALLY_SUPERSEDES` one carrying its `part`), and both
+  chains (predecessors/successors via recursive CTE — whole replacement ONLY,
+  FR-3.1a) plus supplements, `partial_replacers` (each with the part it
+  replaced, FR-3.1c) and conflicts — decisions this one has an acknowledged
   `CONFLICTS_WITH` link with, from `resolve_conflict`'s accept path. Includes
   archived/discarded targets (history hides nothing).
 - **precedent()** — `Embedder.embed(question)` → HNSW k-NN joined to
@@ -36,7 +38,11 @@ Engine only for the archival sweep's transitions. Core stays LLM-free (FR-7.1).
   HNSW cannot be partial on another table; over-fetch k×4 before filtering so
   filtered rows don't starve the result) → hydrate projections, each with its
   similarity score and status (superseded/`not_promoted` history INCLUDED by
-  default — labeled, not hidden; FR-6.3).
+  default — labeled, not hidden; FR-6.3). The compact projection's
+  `partially_replaced` flag rides along (FR-3.1c): a hit whose status is
+  `current` may still have had one ruling replaced, and the flag is what stops
+  that from reading as "nothing here has changed". The `part` text itself is
+  `history()`'s to give.
 - **changes()** — transitions by window/action/actor, joined to compact
   projections (FR-6.5).
 - **queue()** — open items with recommender, rationale, confidence, age;

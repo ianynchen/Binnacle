@@ -87,14 +87,17 @@ citation is broken.
 
 ## Status of the implementation
 
-**Binnacle does not implement partial replacement yet.** `supersede` is
-whole-only, and the long-term tier's statuses are `current | superseded`
-(FR-3.2). This ADR defines the relation; closing the gap is a change to
-binnacle-core, and it is a **precondition for ingesting the fleet's own decision
-records**, because all three of their relationships are partial and none can be
-recorded truthfully today.
+**Shipped in binnacle-core** (FR-3.1a/3.1b/3.1c; see that package's
+CHANGELOG `[Unreleased]`): `PARTIALLY_SUPERSEDES` carrying a `part`,
+`partially_supersede()`, and partial replacers on `history()`. `supersede`
+remains whole-only, and the long-term tier's statuses remain
+`current | superseded` (FR-3.2) — a partially-replaced decision stays
+`current`, which is the point. This closes the **precondition for ingesting
+the fleet's own decision records**, all of whose replacement relationships are
+partial and none of which could be recorded truthfully before it.
 
-Minimum shape of that change, when it is made:
+Minimum shape of that change, as specified before it was made — every point of
+it delivered:
 
 - A partial-replacement link kind alongside the existing supersession link,
   carrying a `part` description.

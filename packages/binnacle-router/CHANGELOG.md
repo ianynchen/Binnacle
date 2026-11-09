@@ -4,7 +4,19 @@ All notable changes to `binnacle-router` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-08
+
+### Added
+
+- `POST /decisions/{id}/relationships` accepts `kind: "PARTIALLY_SUPERSEDES"`
+  with a `part` naming the replaced ruling (core FR-3.1a), so a partial
+  replacement is recordable over REST and not only in-process. The request
+  body mirrors the schema's own `links_part_iff_partial` rule: `part` is
+  required for that kind and refused for every other, as a 422.
+- `GET /decisions` and the precedent/changes feeds carry
+  `partially_replaced` on every compact decision (core FR-3.1c), and
+  `GET /decisions/{id}/history` carries `partial_replacers` and each link's
+  `part`.
 
 ### Changed
 

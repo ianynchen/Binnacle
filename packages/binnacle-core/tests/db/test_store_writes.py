@@ -247,6 +247,90 @@ class TestLinksAndRefs:
             await store.insert_link(tx, d1.decision_id, d2.decision_id, "SUPERSEDES")
             await store.insert_link(tx, d1.decision_id, d2.decision_id, "SUPERSEDES")
 
+    async def test_insert_link_round_trips_the_part_of_a_partial_replacement(
+        self, store: PostgresStore
+    ) -> None:
+        """FR-3.1a: the `part` is the only thing distinguishing a partial
+        replacement from a whole one, so it must survive the write."""
+        d1, d2 = _decision(), _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, d1, "h1")
+            await store.insert_decision(tx, d2, "h2")
+            await store.insert_link(
+                tx,
+                d1.decision_id,
+                d2.decision_id,
+                "PARTIALLY_SUPERSEDES",
+                part="the projection ruling",
+            )
+            links = await store.links_between(tx, d1.decision_id, d2.decision_id)
+        assert [(link.kind, link.part) for link in links] == [
+            ("PARTIALLY_SUPERSEDES", "the projection ruling")
+        ]
+
+    async def test_database_refuses_a_partial_link_with_no_part(self, store: PostgresStore) -> None:
+        """FR-3.1a: "refused without one" is enforced by the schema
+        (`links_part_iff_partial`, migration 0005), not only by the Lifecycle
+        Engine -- a part-less partial link claims some ruling was replaced while
+        naming none, which is unreadable by the human the prose exists for, and
+        the engine cannot speak for a repair script or a future writer."""
+        d1, d2 = _decision(), _decision()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            async with store.transaction() as tx:
+                await store.insert_decision(tx, d1, "h1")
+                await store.insert_decision(tx, d2, "h2")
+                await store.insert_link(tx, d1.decision_id, d2.decision_id, "PARTIALLY_SUPERSEDES")
+
+    @pytest.mark.parametrize("kind", ["SUPERSEDES", "SUPPLEMENTS", "CONFLICTS_WITH"])
+    async def test_database_refuses_a_part_on_any_other_kind(
+        self, store: PostgresStore, kind: str
+    ) -> None:
+        """The same CHECK, other direction: no other relation can name a replaced
+        part, because none of them replaces anything in part (FR-3.1a)."""
+        d1, d2 = _decision(), _decision()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            async with store.transaction() as tx:
+                await store.insert_decision(tx, d1, "h1")
+                await store.insert_decision(tx, d2, "h2")
+                await store.insert_link(
+                    tx,
+                    d1.decision_id,
+                    d2.decision_id,
+                    kind,  # type: ignore[arg-type]
+                    part="a ruling this kind cannot claim to have replaced",
+                )
+
+    async def test_links_between_reads_both_directions(self, store: PostgresStore) -> None:
+        """FR-3.1b's refusals are about the unordered pair (is there a whole link
+        one way? a partial link the other?), so one read must answer for both
+        directions -- a second read would be a second query inside an open
+        transaction for no gain."""
+        a, b = _decision(), _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, a, "h1")
+            await store.insert_decision(tx, b, "h2")
+            await store.insert_link(tx, a.decision_id, b.decision_id, "SUPPLEMENTS")
+            await store.insert_link(
+                tx, b.decision_id, a.decision_id, "PARTIALLY_SUPERSEDES", part="one ruling"
+            )
+            links = await store.links_between(tx, a.decision_id, b.decision_id)
+        assert {(link.from_id, link.kind) for link in links} == {
+            (a.decision_id, "SUPPLEMENTS"),
+            (b.decision_id, "PARTIALLY_SUPERSEDES"),
+        }
+
+    async def test_links_between_ignores_links_to_third_decisions(
+        self, store: PostgresStore
+    ) -> None:
+        a, b, c = _decision(), _decision(), _decision()
+        async with store.transaction() as tx:
+            await store.insert_decision(tx, a, "h1")
+            await store.insert_decision(tx, b, "h2")
+            await store.insert_decision(tx, c, "h3")
+            await store.insert_link(tx, a.decision_id, c.decision_id, "SUPERSEDES")
+            links = await store.links_between(tx, a.decision_id, b.decision_id)
+        assert links == []
+
     async def test_insert_refs_is_idempotent(self, store: PostgresStore) -> None:
         d = _decision()
         refs = [Ref(role="subject", kind="component", identifier="waypoint")]
