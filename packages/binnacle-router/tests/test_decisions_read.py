@@ -14,6 +14,7 @@ from binnacle_core import (
     HistoryRecord,
     Link,
     Page,
+    PartialReplacement,
     Ref,
     Transition,
 )
@@ -282,6 +283,7 @@ def test_history_passes_the_path_id_and_the_record_round_trips(
     predecessor_id = uuid4()
     successor_id = uuid4()
     supplement_id = uuid4()
+    partial_replacer_id = uuid4()
     conflict_id = uuid4()
     recorded_by = Actor("human", "alice")
     recorded_at = datetime(2021, 3, 14, 9, 22, 11, tzinfo=UTC)
@@ -314,10 +316,23 @@ def test_history_passes_the_path_id_and_the_record_round_trips(
                 payload=None,
             )
         ],
-        links=[Link(from_id=decision_id, to_id=predecessor_id, kind="SUPERSEDES")],
+        links=[
+            Link(from_id=decision_id, to_id=predecessor_id, kind="SUPERSEDES"),
+            Link(
+                from_id=partial_replacer_id,
+                to_id=decision_id,
+                kind="PARTIALLY_SUPERSEDES",
+                part="the projection ruling",
+            ),
+        ],
         predecessors=[_decision(predecessor_id)],
         successors=[_decision(successor_id)],
         supplements=[_decision(supplement_id)],
+        partial_replacers=[
+            PartialReplacement(
+                decision=_decision(partial_replacer_id), part="the projection ruling"
+            )
+        ],
         conflicts=[_decision(conflict_id)],
     )
     client.history.return_value = history
@@ -336,7 +351,19 @@ def test_history_passes_the_path_id_and_the_record_round_trips(
         "from_id": str(decision_id),
         "to_id": str(predecessor_id),
         "kind": "SUPERSEDES",
+        "part": None,
     }
+    # FR-3.1c: the REST surface must not collapse the two replacement
+    # relations either -- a partial replacer reaches a caller WITH the part it
+    # replaced, and never as a successor.
+    assert body["links"][1] == {
+        "from_id": str(partial_replacer_id),
+        "to_id": str(decision_id),
+        "kind": "PARTIALLY_SUPERSEDES",
+        "part": "the projection ruling",
+    }
+    assert body["partial_replacers"][0]["decision"]["decision_id"] == str(partial_replacer_id)
+    assert body["partial_replacers"][0]["part"] == "the projection ruling"
     assert body["predecessors"][0]["decision_id"] == str(predecessor_id)
     assert body["successors"][0]["decision_id"] == str(successor_id)
     assert body["supplements"][0]["decision_id"] == str(supplement_id)

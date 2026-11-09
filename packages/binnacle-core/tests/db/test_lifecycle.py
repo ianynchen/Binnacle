@@ -871,6 +871,25 @@ class TestPartialReplacementRefusals:
             await engine.apply_item(item_id, HUMAN)
         assert await _status(store, old.decision_id) == "current"
 
+    async def test_whole_refused_when_partial_already_recorded_via_resolve_conflict(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Same refusal through the conflict door: declaring a winner executes
+        that winner's own `supersede` over the loser (FR-5.4), so it is the same
+        whole-replacement claim and cannot be the way the forbidden pair gets
+        written either. The conflict item is left open for the human to resolve
+        another way — through `refined`, or by accepting both."""
+        winner = await reach(engine, store, "short_term", "current")
+        loser = await reach(engine, store, "short_term", "current")
+        await engine.partially_supersede(
+            winner.decision_id, loser.decision_id, "one ruling", RECORDER
+        )
+        item_id = await _enqueue_conflict(store, winner.decision_id, loser.decision_id)
+        with pytest.raises(InvalidTransition):
+            await engine.resolve_conflict(item_id, HUMAN, winner_id=winner.decision_id)
+        assert await _status(store, loser.decision_id) == "current"
+        await engine.resolve_conflict(item_id, HUMAN, reason="both stand for now")
+
     async def test_mutual_partial_pair_refused(
         self, engine: LifecycleEngine, store: PostgresStore
     ) -> None:
