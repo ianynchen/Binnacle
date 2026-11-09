@@ -135,10 +135,13 @@ class Binnacle:
         force. See `LifecycleEngine.partially_supersede`.
 
         Raises:
+            ValueError: `part` is blank or whitespace-only (FR-3.1a input
+                validation — a part naming nothing leaves the link unreadable).
             DecisionNotFound: either id does not exist.
             AuthorityViolation: `old_id` is long-term and `actor.kind != 'human'`.
             InvalidTransition: the claim cannot be true (FR-3.1b) — self-replacement,
-                a whole-and-partial pair, or a mutual partial pair.
+                a whole-and-partial pair in either orientation, or a mutual partial
+                pair.
         """
         await self._engine.partially_supersede(new_id, old_id, part, actor)
 

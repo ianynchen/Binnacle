@@ -43,6 +43,7 @@ def test_a_nonempty_page_of_compact_decisions_serializes_faithfully(
         subject_refs=[
             Ref(role="subject", kind="component", identifier="portolan-ingest", note="primary")
         ],
+        partially_replaced=False,
     )
     client.relevant.return_value = Page(items=[decision], next_cursor="opaque-token-xyz")
 
@@ -66,6 +67,9 @@ def test_a_nonempty_page_of_compact_decisions_serializes_faithfully(
             "note": "primary",
         }
     ]
+    # FR-3.1c: the flag must reach a REST consumer, or a `current` status in a
+    # listing reads as "nothing here has changed" when a ruling is gone.
+    assert item["partially_replaced"] is False
 
 
 def test_filters_and_sort_reach_the_client_unchanged(http: TestClient, client: AsyncMock) -> None:

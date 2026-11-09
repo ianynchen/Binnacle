@@ -790,6 +790,26 @@ class TestMatrixPartiallySupersede:
         with pytest.raises(DecisionNotFound):
             await engine.partially_supersede(uuid4(), old.decision_id, "one ruling", RECORDER)
 
+    @pytest.mark.parametrize("part", ["", "   ", "\n\t "])
+    async def test_blank_part_refused_as_input_not_as_a_refusal(
+        self, engine: LifecycleEngine, store: PostgresStore, part: str
+    ) -> None:
+        """FR-3.1a: a `part` naming nothing leaves the link **unreadable** by the
+        human the prose exists for, so it is refused — but as input validation,
+        not as one of FR-3.1b's three refusals, which reject statements that
+        cannot be *true*. Hence `ValueError` (the type `changes()` already raises
+        for a malformed argument), not `InvalidTransition`, and raised before
+        anything is read or locked. Whitespace-only is blank: the string is
+        stripped before testing, or `part="   "` would satisfy a bare emptiness
+        check while telling a reader nothing."""
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        with pytest.raises(ValueError, match="part"):
+            await engine.partially_supersede(new.decision_id, old.decision_id, part, RECORDER)
+        hist = await store.history(old.decision_id)
+        assert hist.links == []
+        assert "partial_replacement_linked" not in [t.action for t in hist.transitions]
+
     async def test_does_not_void_the_targets_open_items(
         self, engine: LifecycleEngine, store: PostgresStore
     ) -> None:
@@ -852,6 +872,42 @@ class TestPartialReplacementRefusals:
         with pytest.raises(InvalidTransition):
             await engine.supersede(new.decision_id, old.decision_id, RECORDER)
         assert await _status(store, old.decision_id) == "current"
+
+    async def test_partial_refused_when_whole_already_recorded_in_either_orientation(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """FR-3.1b, second refusal, the orientation the first cut of this feature
+        missed: B wholly replaces A, and now A is claimed to replace part of B.
+        Impossible for an ordering reason rather than an in-force one — B wholly
+        replacing A puts B after A, while A replacing part of B would put A after
+        B. Both cannot hold, so orientation is not part of the test: any whole
+        replacement between the pair refuses a partial one."""
+        a = await reach(engine, store, "short_term", "current")
+        b = await engine.record(_nd(scenario="decision B"), RECORDER)
+        await engine.supersede(b.decision_id, a.decision_id, RECORDER)  # B wholly replaces A
+        with pytest.raises(InvalidTransition):
+            await engine.partially_supersede(
+                a.decision_id, b.decision_id, "B's logging ruling", RECORDER
+            )
+        hist = await store.history(b.decision_id)
+        assert [link.kind for link in hist.links] == ["SUPERSEDES"]
+
+    async def test_whole_refused_when_partial_already_recorded_in_either_orientation(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """The same orientation in the other order of recording: A already
+        replaces part of B, and B is now claimed to wholly replace A. Refused
+        for the same reason — the two claims order the pair in opposite
+        directions."""
+        a = await reach(engine, store, "short_term", "current")
+        b = await engine.record(_nd(scenario="decision B"), RECORDER)
+        await engine.partially_supersede(
+            a.decision_id, b.decision_id, "B's logging ruling", RECORDER
+        )
+        with pytest.raises(InvalidTransition):
+            await engine.supersede(b.decision_id, a.decision_id, RECORDER)
+        assert await _status(store, a.decision_id) == "current"
+        assert await _status(store, b.decision_id) == "current"
 
     async def test_whole_refused_when_partial_already_recorded_via_apply_item(
         self, engine: LifecycleEngine, store: PostgresStore

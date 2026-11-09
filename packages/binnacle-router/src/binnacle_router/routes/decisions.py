@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from binnacle_core import (
     Actor,
@@ -195,14 +195,34 @@ class PromoteRefinedRequest(BaseModel):
 
 
 class RelationshipRequest(BaseModel):
-    """`kind` is closed to the two relationships a caller may curate directly.
+    """`kind` is closed to the three relationships a caller may curate directly.
     `PROMOTED_FROM` is internal provenance and `CONFLICTS_WITH` is set only by
     `resolve_conflict` -- neither is settable here, so FastAPI rejects any
     other value with a 422 rather than this endpoint silently widening what
-    it accepts."""
+    it accepts.
 
-    kind: Literal["SUPERSEDES", "SUPPLEMENTS"]
+    `part` names the replaced ruling and belongs to `PARTIALLY_SUPERSEDES`
+    alone (core FR-3.1a). The validator below mirrors the schema's own
+    `links_part_iff_partial` CHECK rather than letting core decide: a `part`
+    sent with the wrong `kind` is a malformed *request*, which belongs in the
+    422 FastAPI already produces for this body, not a 409 about an impossible
+    state."""
+
+    kind: Literal["SUPERSEDES", "PARTIALLY_SUPERSEDES", "SUPPLEMENTS"]
     target_id: UUID
+    part: str | None = None
+
+    @model_validator(mode="after")
+    def validate_part_matches_kind(self) -> "RelationshipRequest":
+        """`part` present exactly for `PARTIALLY_SUPERSEDES`."""
+        if self.kind == "PARTIALLY_SUPERSEDES":
+            if self.part is None:
+                msg = "part is required for kind PARTIALLY_SUPERSEDES"
+                raise ValueError(msg)
+        elif self.part is not None:
+            msg = f"part is not accepted for kind {self.kind}"
+            raise ValueError(msg)
+        return self
 
 
 class ReasonRequest(BaseModel):
@@ -240,6 +260,11 @@ def decision_write_router(
     ) -> None:
         if body.kind == "SUPERSEDES":
             await binnacle.supersede(decision_id, body.target_id, actor=actor)
+        elif body.kind == "PARTIALLY_SUPERSEDES":
+            # `part` is not None here: the body validator above refuses this
+            # kind without one, which holds as long as that validator stays.
+            assert body.part is not None
+            await binnacle.partially_supersede(decision_id, body.target_id, body.part, actor=actor)
         else:
             await binnacle.supplement(decision_id, body.target_id, actor=actor)
 

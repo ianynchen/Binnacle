@@ -198,7 +198,24 @@ class Decision:
 
 @dataclass(frozen=True)
 class CompactDecision:
-    """A compact representation of a decision for listing."""
+    """A compact representation of a decision for listing.
+
+    `partially_replaced` is true when at least one later decision replaced part
+    of this one (FR-3.1c). The flag travels with the compact projection, and the
+    `part` text deliberately does not: naming what was replaced is the full
+    read's job (`history().partial_replacers`), while a listing only has to stop
+    short of implying nothing was replaced.
+
+    It is carried here even though supplements are NOT (FR-5.3), because the two
+    relations are asymmetric: a supplement **adds**, so a consumer that misses
+    one merely lacks context, while a partial replacement **subtracts**, so a
+    consumer that misses one relies on a ruling that is gone — with a `status`
+    of `current` that is true and still misleading. That is the exact failure
+    FR-3.1c exists to prevent.
+
+    No default: a store that omitted the flag would report "nothing here was
+    replaced", which is the misleading answer rather than an absent one.
+    """
 
     id: UUID
     domain: str
@@ -206,6 +223,7 @@ class CompactDecision:
     status: ShortStatus | LongStatus
     outcome_truncated: str
     subject_refs: list[Ref]
+    partially_replaced: bool
 
 
 @dataclass(frozen=True)

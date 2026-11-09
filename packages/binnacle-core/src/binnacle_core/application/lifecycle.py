@@ -356,9 +356,9 @@ class LifecycleEngine:
             DecisionNotFound: either id does not exist.
             AuthorityViolation: `old_id` is long-term and `actor.kind != 'human'`.
             InvalidTransition: the tiers don't match, `old_id` is not
-                supersedable, the link would create a cycle, or `new_id`
-                already replaces only PART of `old_id` (FR-3.1b: it cannot
-                also replace all of it).
+                supersedable, the link would create a cycle, or the pair
+                already carries a partial replacement in either orientation
+                (FR-3.1b: whole and partial cannot both hold).
         """
         old_peek = await self._store.get_decision(old_id)
         if old_peek is None:
@@ -397,11 +397,20 @@ class LifecycleEngine:
         Raises:
             DecisionNotFound: either id does not exist.
             AuthorityViolation: `old_id` is long-term and `actor.kind != 'human'`.
+            ValueError: `part` is blank or whitespace-only. This is input
+                validation, NOT one of FR-3.1b's three refusals: those reject
+                statements that cannot be *true*, whereas a part naming nothing
+                makes the link **unreadable** by the human the prose exists for
+                (FR-3.1a) — a different failure, so the closed set stays closed.
+                Raised before anything is read or locked.
             InvalidTransition: the claim cannot be true (FR-3.1b) — `new_id` is
-                `old_id`, `new_id` already WHOLLY replaces `old_id`, or `old_id`
-                already replaces part of `new_id`. See
+                `old_id`, the two already stand in a WHOLE replacement in either
+                orientation, or `old_id` already replaces part of `new_id`. See
                 `_validate_partial_replacement` for each one's reasoning.
         """
+        if not part.strip():
+            msg = "part must name the replaced ruling; a blank part makes the link unreadable"
+            raise ValueError(msg)
         old_peek = await self._store.get_decision(old_id)
         if old_peek is None:
             raise DecisionNotFound(str(old_id))
@@ -873,9 +882,15 @@ class LifecycleEngine:
         1. **Self-replacement.** To replace a ruling is for a *later* decision to
            take a different position on the question that ruling answered; a
            decision has no earlier ruling of its own to have replaced.
-        2. **Whole and partial between the same pair.** If `new_id` already
-           wholly replaces `old_id`, then no ruling of `old_id` is in force, so
-           there is no longer any ruling of it left to replace in part.
+        2. **Whole and partial between the same pair, in either orientation.**
+           If `new_id` already wholly replaces `old_id`, then no ruling of
+           `old_id` is in force, so there is no longer any ruling of it left to
+           replace in part. And if `old_id` wholly replaces `new_id`, the claim
+           is impossible the other way round: `old_id` wholly replacing `new_id`
+           puts `old_id` after `new_id`, while `new_id` replacing part of
+           `old_id` would put `new_id` after `old_id`. Orientation is therefore
+           NOT part of this test — any `SUPERSEDES` link between the pair
+           refuses it.
         3. **A mutual partial pair.** Replacement needs a ruling that *was in
            force* and a later decision taking a different position on it. For
            two decisions authored together, neither was ever in force first, so
@@ -896,10 +911,10 @@ class LifecycleEngine:
             msg = "a decision cannot replace part of itself"
             raise InvalidTransition(old_status, "partially_supersede", msg)
         links = await self._store.links_between(tx, new_id, old_id)
-        if any(link.kind == "SUPERSEDES" and link.from_id == new_id for link in links):
+        if any(link.kind == "SUPERSEDES" for link in links):
             msg = (
-                "the new decision already wholly replaces the old one, so no ruling of "
-                "the old one is in force to be replaced in part"
+                "the two already stand in a whole replacement, which orders them and "
+                "leaves no ruling of the replaced one in force to be replaced in part"
             )
             raise InvalidTransition(old_status, "partially_supersede", msg)
         if any(link.kind == "PARTIALLY_SUPERSEDES" and link.from_id == old_id for link in links):
@@ -913,14 +928,17 @@ class LifecycleEngine:
         self, tx: Tx, new_id: UUID, old_id: UUID, old_status: str, action: str
     ) -> None:
         """FR-3.1b's whole-and-partial refusal in the *other* order of recording:
-        `new_id` already replaces part of `old_id`, and whole replacement is now
-        claimed over the same pair. Same single falsehood as
-        `_validate_partial_replacement`'s second refusal — a decision cannot both
-        have left some of `old_id`'s rulings in force and have replaced them all —
-        so it must be refused whichever link is recorded first, and that means
-        every act that writes a SUPERSEDES link between two PRE-EXISTING
-        decisions checks it: `supersede`, `apply_item`, and `resolve_conflict`'s
-        winner path, i.e. exactly where `_check_acyclic` is already called.
+        the pair already carries a partial replacement, and whole replacement is
+        now claimed over it. Same single falsehood as
+        `_validate_partial_replacement`'s second refusal, so it is refused in
+        **either orientation** too — `new_id` cannot both have left some of
+        `old_id`'s rulings in force and have replaced them all, and `old_id`
+        replacing part of `new_id` orders the two the opposite way from `new_id`
+        wholly replacing `old_id`. It must be refused whichever link is recorded
+        first, and that means every act that writes a SUPERSEDES link between two
+        PRE-EXISTING decisions checks it: `supersede`, `apply_item`, and
+        `resolve_conflict`'s winner path, i.e. exactly where `_check_acyclic` is
+        already called.
 
         `record`'s declared-`supersedes` path and `_execute_pending_claims` need
         no check: their `new_id` is a freshly minted row with no links at all, so
@@ -930,10 +948,10 @@ class LifecycleEngine:
 
         Tx-scoped for the same pool-exhaustion reason as `_check_acyclic`."""
         links = await self._store.links_between(tx, new_id, old_id)
-        if any(link.kind == "PARTIALLY_SUPERSEDES" and link.from_id == new_id for link in links):
+        if any(link.kind == "PARTIALLY_SUPERSEDES" for link in links):
             msg = (
-                "the new decision already replaces only part of the old one; it cannot "
-                "also replace all of it"
+                "the two already stand in a partial replacement, which leaves rulings in "
+                "force and orders them; neither can then wholly replace the other"
             )
             raise InvalidTransition(old_status, action, msg)
 

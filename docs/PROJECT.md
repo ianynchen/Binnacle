@@ -19,7 +19,7 @@ statuses below reflect what is verified in `src/` as of that work landing
 | Query additions: `sort`/`order`/`after` pagination and `evidence`/`expiring_before` filters on `relevant()`; pagination on `queue()`; `relevant_count()`, `queue_summary()`, `domain_summary()`; `after_id` tiebreaker on `changes()` — **breaking:** `relevant()`/`queue()` now return `Page[...]` | delivered | FR-6.1, FR-6.4, FR-6.5, FR-6.10; `packages/binnacle-core/CHANGELOG.md` `[Unreleased]` |
 | Evidence-ref partial index (`idx_refs_evidence`, migration `0004_evidence_ref_index`) | delivered | `docs/binnacle-core/ARCHITECTURE.md` §4 |
 | NFR-7 performance targets, verified by seeded perf test at design scale (10,000 decisions / 100,000 transitions) | delivered | NFR-7 |
-| Partial replacement between decisions (`PARTIALLY_SUPERSEDES` + `part`, migration `0005_link_part`, `partially_supersede()`, three refusals, partial replacers on `history()`) | delivered | `docs/adr/0002-whole-and-partial-replacement.md`; `docs/binnacle-core/REQUIREMENTS.md` FR-3.1a/3.1b/3.1c |
+| Partial replacement between decisions (`PARTIALLY_SUPERSEDES` + `part`, migration `0005_link_part`, `partially_supersede()`, three refusals, partial replacers on `history()`, `partially_replaced` on every compact read) | delivered | `docs/adr/0002-whole-and-partial-replacement.md`; `docs/binnacle-core/REQUIREMENTS.md` FR-3.1a/3.1b/3.1c |
 
 ## binnacle-router
 
@@ -27,6 +27,7 @@ statuses below reflect what is verified in `src/` as of that work landing
 |---|---|---|
 | REST surface: `make_router()` factory, `install_error_handlers()` RFC 7807 mapping, decisions (read + write), queue, domain registry, dashboard summaries, changes/precedent/export feeds, engine sweeps | delivered | `docs/binnacle-router/REQUIREMENTS.md` FR-1–FR-7; `packages/binnacle-router/CHANGELOG.md` `[Unreleased]` |
 | Import-linter contract restricting the package to `binnacle-core`'s public surface | delivered | `docs/binnacle-router/ARCHITECTURE.md` §5 |
+| Partial replacement over REST (`PARTIALLY_SUPERSEDES` + `part` on the relationships endpoint; `partially_replaced` and `partial_replacers` on the reads) | delivered | `docs/binnacle-core/REQUIREMENTS.md` FR-3.1a/3.1c; `packages/binnacle-router/CHANGELOG.md` `[Unreleased]` |
 | Full per-operation OpenAPI response catalog (400/403/404/409/500) | deferred | `docs/binnacle-router/REQUIREMENTS.md` §5; the 422 declaration is delivered per FR-5.6 |
 | MCP surface | deferred | `docs/binnacle-router/REQUIREMENTS.md` §5 |
 

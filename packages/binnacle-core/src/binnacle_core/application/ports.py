@@ -325,7 +325,8 @@ class StorePort(Protocol):
         """`get_many`'s compact projection (docs/binnacle-core/components/04's "Compact
         projections are SQL-level" contract point): the same id-list lookup,
         but selecting only the compact columns with `outcome` truncated to
-        `compact_chars` in SQL — no full-row fetch then trim. Exists for
+        `compact_chars` and `partially_replaced` computed (FR-3.1c) in SQL — no
+        full-row fetch then trim. Exists for
         `precedent()`, which hydrates a `knn`-picked id list rather than
         scanning a filtered range. Ids with no matching row are simply absent;
         result order is unspecified (callers that care, like `precedent()`,
@@ -427,7 +428,8 @@ class StorePort(Protocol):
         build the next cursor from what it received.
 
         Projection: `compact_chars` an `int` returns `Page[CompactDecision]` with
-        `outcome` truncated to that length **in SQL** (no fetch-then-trim, FR-6.7);
+        `outcome` truncated to that length and `partially_replaced` computed
+        (FR-3.1c) **in SQL** (no fetch-then-trim, FR-6.7);
         `compact_chars=None` returns the full `Page[Decision]`. The two
         `@overload`s above narrow the return type at each call site on a
         literal/omitted vs. `None` `compact_chars`, so callers get

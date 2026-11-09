@@ -271,6 +271,82 @@ class TestAttributeFilters:
         assert short not in ids
 
 
+class TestPartiallyReplacedFlag:
+    """FR-3.1c: a partially-replaced decision stays `current`, so in a compact
+    read its status is true and, on its own, misleading — the consumer cannot
+    see that one of its rulings is gone. The flag is what stops the listing from
+    implying nothing was replaced; the `part` text is `history()`'s to give.
+
+    Carried here even though supplements are deliberately absent from these
+    reads (FR-5.3), because the two relations are asymmetric: a supplement adds
+    (missing it costs context), a partial replacement subtracts (missing it
+    means relying on a ruling that no longer stands).
+    """
+
+    @staticmethod
+    async def _replace_part(store: PostgresStore, replacer: UUID, target: UUID) -> None:
+        async with store.transaction() as tx:
+            await store.insert_link(
+                tx, replacer, target, "PARTIALLY_SUPERSEDES", part="the backoff ruling"
+            )
+
+    async def test_precedent_flags_the_replaced_decision_and_not_the_replacer(
+        self, store: PostgresStore, embedder: StubEmbedder, query_vector: list[float]
+    ) -> None:
+        """The flag marks the decision whose ruling went, not the one that
+        replaced it — a replacer carrying the flag would send the reader looking
+        for a loss on the wrong side."""
+        target = await _seed(store, _decision(), _perturb(query_vector, 0))
+        replacer = await _seed(store, _decision(), _perturb(query_vector, 1))
+        untouched = await _seed(store, _decision(), _perturb(query_vector, 2))
+        await self._replace_part(store, replacer, target)
+
+        hits = await precedent(store, embedder, QUESTION, limit=10)
+        flags = {h.decision.id: h.decision.partially_replaced for h in hits}
+
+        assert flags[target] is True
+        assert flags[replacer] is False
+        assert flags[untouched] is False
+
+    async def test_relevant_flags_the_replaced_decision(self, store: PostgresStore) -> None:
+        """`relevant()` is the read the falsehood used to hide in: recording this
+        as `supersede` dropped the decision out of the page entirely, and leaving
+        it unflagged puts it back with nothing to say a ruling is gone."""
+        target = await _seed(store, _decision(), _perturb([0.0] * DIM, 0))
+        replacer = await _seed(store, _decision(), _perturb([0.0] * DIM, 0))
+        await self._replace_part(store, replacer, target)
+
+        page = await store.relevant(domains=["eng"], limit=50)
+        flags = {item.id: item.partially_replaced for item in page.items}
+
+        assert flags[target] is True, "a partially-replaced decision must say so"
+        assert flags[replacer] is False
+
+    async def test_every_compact_read_computes_the_flag(self, store: PostgresStore) -> None:
+        """One expression, every compact projection (FR-3.1c). A read that
+        hardcoded `False` where the flag was inconvenient would be making the
+        claim "nothing here was replaced" — the misleading answer, not an absent
+        one — so all five are checked, not only the two FR-3.1c names."""
+        target = await _seed(store, _decision(source="fleet-records"), [0.0] * DIM)
+        replacer = await _seed(store, _decision(source="fleet-records"), [0.0] * DIM)
+        await self._replace_part(store, replacer, target)
+        tomorrow = datetime.now(UTC) + timedelta(days=1)
+
+        compacts = await store.get_many_compact([target, replacer])
+        by_source = await store.by_source("fleet-records")
+        changes = await store.changes(limit=50)
+        aging = await store.aging_unrecommended(tomorrow, 50)
+
+        for label, flags in (
+            ("get_many_compact", {c.id: c.partially_replaced for c in compacts}),
+            ("by_source", {c.id: c.partially_replaced for c in by_source}),
+            ("changes", {c.id: c.partially_replaced for _, c in changes}),
+            ("aging_unrecommended", {c.id: c.partially_replaced for c in aging}),
+        ):
+            assert flags[target] is True, f"{label} did not flag the replaced decision"
+            assert flags[replacer] is False, f"{label} flagged the replacer"
+
+
 class TestLimitHonoredWhenFiltersDropRows:
     """The over-fetch case: `store.knn` doesn't know about domains/tiers, so
     the raw k-NN ranking can be dominated by candidates the filter is about to

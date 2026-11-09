@@ -191,6 +191,26 @@ def _row_to_transition(row: dict[str, Any]) -> Transition:
     )
 
 
+def _partially_replaced_sql(schema: str) -> str:
+    """SQL for `CompactDecision.partially_replaced` (FR-3.1c): whether any later
+    decision replaced part of `d` (alias `d` in every compact projection below).
+
+    Computed IN SQL, like `outcome_truncated`, for the same reason
+    (docs/binnacle-core/components/04-query-and-assist.md's "compact projections
+    are SQL-level" contract point) — a per-row follow-up query would make every
+    listing N+1. `idx_links_to(to_id, kind)` serves the lookup directly.
+
+    Every compact projection uses this one expression rather than hardcoding
+    `False` where the flag is inconvenient: a listing that claims nothing was
+    replaced is the misleading read FR-3.1c exists to prevent, and a hardcoded
+    `False` is exactly that claim.
+    """
+    return (
+        f"EXISTS (SELECT 1 FROM {schema}.links pl "
+        "WHERE pl.to_id = d.decision_id AND pl.kind = 'PARTIALLY_SUPERSEDES')"
+    )
+
+
 def _row_to_link(row: dict[str, Any]) -> Link:
     """A `links` row as a `Link`, `part` included — the one projection every
     link read goes through, so no read can drop the `part` that distinguishes a
@@ -777,7 +797,8 @@ class PostgresStore:
         params: dict[str, Any] = {"ids": list(ids), "compact_chars": compact_chars}
         sql = (
             f"SELECT d.decision_id, d.domain, d.tier, d.status, "
-            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
+            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated, "
+            f"{_partially_replaced_sql(schema)} AS partially_replaced "
             f"FROM {schema}.decisions d WHERE d.decision_id = ANY(%(ids)s)"
         )
         async with self._read_conn() as conn:
@@ -794,6 +815,7 @@ class PostgresStore:
                 status=r["status"],
                 outcome_truncated=r["outcome_truncated"],
                 subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                partially_replaced=r["partially_replaced"],
             )
             for r in rows
         ]
@@ -1002,6 +1024,7 @@ class PostgresStore:
             sql = (
                 f"SELECT d.decision_id, d.domain, d.tier, d.status, "
                 f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated, "
+                f"{_partially_replaced_sql(schema)} AS partially_replaced, "
                 f"{_sort_expr} AS _sort_value "
                 f"FROM {schema}.decisions d{join_sql} WHERE {where_sql} "
                 f"{order_sql} LIMIT %(limit)s"
@@ -1033,6 +1056,7 @@ class PostgresStore:
                         status=r["status"],
                         outcome_truncated=r["outcome_truncated"],
                         subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                        partially_replaced=r["partially_replaced"],
                     )
                     for r in rows
                 ],
@@ -1244,7 +1268,8 @@ class PostgresStore:
         where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = (
             "SELECT t.*, d.domain AS d_domain, d.tier AS d_tier, d.status AS d_status, "
-            f"LEFT(d.outcome, %(compact_chars)s) AS d_outcome_truncated "
+            f"LEFT(d.outcome, %(compact_chars)s) AS d_outcome_truncated, "
+            f"{_partially_replaced_sql(schema)} AS d_partially_replaced "
             f"FROM {schema}.transitions t JOIN {schema}.decisions d ON d.decision_id = t.decision_id"
             f"{where_sql} ORDER BY t.at DESC, t.transition_id DESC LIMIT %(limit)s"
         )
@@ -1264,6 +1289,7 @@ class PostgresStore:
                     status=r["d_status"],
                     outcome_truncated=r["d_outcome_truncated"],
                     subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                    partially_replaced=r["d_partially_replaced"],
                 ),
             )
             for r in rows
@@ -1409,7 +1435,8 @@ class PostgresStore:
             params["tier"] = tier
         sql = (
             f"SELECT d.decision_id, d.domain, d.tier, d.status, "
-            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
+            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated, "
+            f"{_partially_replaced_sql(schema)} AS partially_replaced "
             f"FROM {schema}.decisions d WHERE {' AND '.join(conditions)} "
             "ORDER BY d.recorded_at DESC, d.decision_id ASC LIMIT %(limit)s"
         )
@@ -1427,6 +1454,7 @@ class PostgresStore:
                 status=r["status"],
                 outcome_truncated=r["outcome_truncated"],
                 subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                partially_replaced=r["partially_replaced"],
             )
             for r in rows
         ]
@@ -1481,7 +1509,8 @@ class PostgresStore:
         schema = self._schema
         sql = (
             f"SELECT d.decision_id, d.domain, d.tier, d.status, "
-            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated "
+            f"LEFT(d.outcome, %(compact_chars)s) AS outcome_truncated, "
+            f"{_partially_replaced_sql(schema)} AS partially_replaced "
             f"FROM {schema}.decisions d "
             "WHERE d.tier = 'short_term' AND d.status = 'current' "
             "AND d.recorded_at < %(older_than)s "
@@ -1508,6 +1537,7 @@ class PostgresStore:
                 status=r["status"],
                 outcome_truncated=r["outcome_truncated"],
                 subject_refs=subject_refs_by_id.get(r["decision_id"], []),
+                partially_replaced=r["partially_replaced"],
             )
             for r in rows
         ]

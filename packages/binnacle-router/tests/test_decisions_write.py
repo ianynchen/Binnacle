@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from binnacle_core import Actor, Decision, NewDecision
@@ -146,6 +147,65 @@ def test_supplements_routes_to_supplement_not_supersede(
     client.supersede.assert_not_awaited()
     assert client.supplement.await_args.args[:2] == (new_id, old_id)
     assert client.supplement.await_args.kwargs["actor"] == human_actor
+
+
+def test_partially_supersedes_routes_with_its_part(
+    http: TestClient, client: AsyncMock, human_actor: Actor
+) -> None:
+    """Core FR-3.1a over REST: path id is the `from` side (the replacing
+    decision), `target_id` the `to` side, and `part` reaches the client as given
+    -- the prose is the whole claim, so dropping or reordering it is the same
+    data corruption the two siblings above pin against."""
+    new_id, old_id = uuid4(), uuid4()
+    client.partially_supersede.return_value = None
+    response = http.post(
+        f"/binnacle/v1/decisions/{new_id}/relationships",
+        json={
+            "kind": "PARTIALLY_SUPERSEDES",
+            "target_id": str(old_id),
+            "part": "the projection ruling",
+        },
+    )
+    assert response.status_code == 200
+    client.partially_supersede.assert_awaited_once()
+    client.supersede.assert_not_awaited()
+    client.supplement.assert_not_awaited()
+    assert client.partially_supersede.await_args.args[:3] == (
+        new_id,
+        old_id,
+        "the projection ruling",
+    )
+    assert client.partially_supersede.await_args.kwargs["actor"] == human_actor
+
+
+def test_partially_supersedes_without_a_part_is_rejected(
+    http: TestClient, client: AsyncMock
+) -> None:
+    """A partial replacement naming no part is unreadable (core FR-3.1a). Caught
+    in the request body so the caller gets a 422 naming the field, rather than
+    reaching core and coming back as a bare argument error."""
+    response = http.post(
+        f"/binnacle/v1/decisions/{uuid4()}/relationships",
+        json={"kind": "PARTIALLY_SUPERSEDES", "target_id": str(uuid4())},
+    )
+    assert response.status_code == 422
+    client.partially_supersede.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", ["SUPERSEDES", "SUPPLEMENTS"])
+def test_a_part_on_any_other_kind_is_rejected(
+    http: TestClient, client: AsyncMock, kind: str
+) -> None:
+    """The other half of the schema's own `links_part_iff_partial` rule: no
+    other relationship replaces anything in part, so none of them may name a
+    replaced part."""
+    response = http.post(
+        f"/binnacle/v1/decisions/{uuid4()}/relationships",
+        json={"kind": kind, "target_id": str(uuid4()), "part": "a ruling"},
+    )
+    assert response.status_code == 422
+    client.supersede.assert_not_awaited()
+    client.supplement.assert_not_awaited()
 
 
 def test_an_unknown_relationship_kind_is_rejected(http: TestClient, client: AsyncMock) -> None:

@@ -4,7 +4,7 @@ All notable changes to `binnacle-core` are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - 2026-11-08
 
 ### Added
 
@@ -28,6 +28,15 @@ All notable changes to `binnacle-core` are documented here. Format follows
   only, so a caller can still ask "is anything here in force?" truthfully.
 - `StorePort.links_between(tx, a, b)`, a tx-scoped read of the links between
   two decisions, for the refusal checks below.
+- `CompactDecision.partially_replaced` (FR-3.1c): every compact read
+  (`relevant()`, `precedent()`, `changes()`, `by_source()`,
+  `aging_unrecommended()`) now reports whether a later decision replaced part
+  of the listed one, computed in SQL alongside `outcome_truncated`. The flag,
+  not the `part` text, which belongs to `history()`. Supplements are absent
+  from these reads and this is not, because the relations are asymmetric: a
+  supplement adds, so missing it costs a consumer context, while a partial
+  replacement subtracts, so missing it means relying on a ruling that is gone
+  behind a `current` status that is true and still misleading.
 
 ### Changed
 
@@ -36,6 +45,16 @@ All notable changes to `binnacle-core` are documented here. Format follows
   — the whole-and-partial refusal applies in either order of recording.
 - `StorePort.insert_link` takes an optional keyword-only `part`. Existing call
   sites are unaffected.
+- `partially_supersede` raises `ValueError` for a blank or whitespace-only
+  `part` (FR-3.1a). This is input validation, not one of FR-3.1b's three
+  refusals: those reject statements that cannot be true, while a part naming
+  nothing leaves the link unreadable.
+- The whole-and-partial refusal applies in **either orientation**, not only in
+  either order of recording (FR-3.1b): A wholly replacing B and B replacing
+  part of A order the pair in opposite directions, so both cannot hold.
+- `HistoryRecord` and `CompactDecision` each gained a required field
+  (`partial_replacers`, `partially_replaced`). Keyword construction is
+  unaffected; positional construction of these two read models breaks.
 
 ## [0.5.0] - 2026-09-05
 
