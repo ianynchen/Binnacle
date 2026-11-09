@@ -810,6 +810,26 @@ class TestMatrixPartiallySupersede:
         assert hist.links == []
         assert "partial_replacement_linked" not in [t.action for t in hist.transitions]
 
+    async def test_stored_part_round_trips_stripped_of_its_edges(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Validation and storage must agree on what the value is (FR-3.1a). The
+        blank-part refusal above tests `part.strip()`, so the stripped string is
+        what the invariant ran against — persisting the unstripped one would
+        leave every later reader (a diff, an export, a UI, a human comparing two
+        records) looking at a value no check ever saw. Interior whitespace is
+        untouched: the prose's shape is the caller's business."""
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        await engine.partially_supersede(
+            new.decision_id, old.decision_id, "  the  projection ruling\n", RECORDER
+        )
+        hist = await store.history(old.decision_id)
+        assert [p.part for p in hist.partial_replacers] == ["the  projection ruling"]
+        assert [link.part for link in hist.links if link.kind == "PARTIALLY_SUPERSEDES"] == [
+            "the  projection ruling"
+        ]
+
     async def test_does_not_void_the_targets_open_items(
         self, engine: LifecycleEngine, store: PostgresStore
     ) -> None:

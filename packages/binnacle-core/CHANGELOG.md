@@ -48,7 +48,9 @@ All notable changes to `binnacle-core` are documented here. Format follows
 - `partially_supersede` raises `ValueError` for a blank or whitespace-only
   `part` (FR-3.1a). This is input validation, not one of FR-3.1b's three
   refusals: those reject statements that cannot be true, while a part naming
-  nothing leaves the link unreadable.
+  nothing leaves the link unreadable. The `part` is stored stripped of leading
+  and trailing whitespace (never interior) so that the value persisted is the
+  value the refusal ran against.
 - The whole-and-partial refusal applies in **either orientation**, not only in
   either order of recording (FR-3.1b): A wholly replacing B and B replacing
   part of A order the pair in opposite directions, so both cannot hold.

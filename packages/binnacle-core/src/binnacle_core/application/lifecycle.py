@@ -397,7 +397,9 @@ class LifecycleEngine:
         Raises:
             DecisionNotFound: either id does not exist.
             AuthorityViolation: `old_id` is long-term and `actor.kind != 'human'`.
-            ValueError: `part` is blank or whitespace-only. This is input
+            ValueError: `part` is blank or whitespace-only (it is stripped of
+                leading and trailing whitespace first, and stored stripped, so
+                the value validated is the value persisted). This is input
                 validation, NOT one of FR-3.1b's three refusals: those reject
                 statements that cannot be *true*, whereas a part naming nothing
                 makes the link **unreadable** by the human the prose exists for
@@ -408,7 +410,14 @@ class LifecycleEngine:
                 orientation, or `old_id` already replaces part of `new_id`. See
                 `_validate_partial_replacement` for each one's reasoning.
         """
-        if not part.strip():
+        # Validation and storage must agree on what the value IS: a `part` that
+        # passes a stripped check and then persists unstripped means the thing
+        # validated is not the thing stored, and every later reader -- a diff, an
+        # export, a UI, a human comparing two records -- sees a value the
+        # invariant never ran against. Edges only: the prose's interior shape is
+        # the caller's business, not ours.
+        part = part.strip()
+        if not part:
             msg = "part must name the replaced ruling; a blank part makes the link unreadable"
             raise ValueError(msg)
         old_peek = await self._store.get_decision(old_id)

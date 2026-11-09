@@ -266,6 +266,8 @@ class Link:
     `part` is the replaced-part description a `PARTIALLY_SUPERSEDES` link
     carries (FR-3.1a): prose naming which ruling of `to_id` the decision
     `from_id` replaced, written for a human and parsed by nothing (ADR 0002).
+    Stored stripped of leading and trailing whitespace (never interior), so the
+    value a reader compares is the value the blank-part refusal ran against.
     It is `None` on every other kind, and never `None` on this one — the
     `links` CHECK constraint (migration 0005) enforces both directions, so a
     partial-replacement link with no part cannot exist in the database.
