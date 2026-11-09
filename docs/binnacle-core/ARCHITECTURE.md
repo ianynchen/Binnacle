@@ -61,7 +61,7 @@ meridian (UI, authn/authz, jobs)          agents (via meridian tools)
 |---|---|
 | **Recorder** | FR-1 write path: registry/ref validation, idempotent insert (caller ids), `decided_at`/`recorded_at`, declared relationships, human-only direct-to-long-term (FR-4.4) and refined/consolidating promotion content (FR-4.6). Enqueues embedding backfill. |
 | **Domain Registry** | FR-2: governed domain list; human-only changes, transition-logged. |
-| **Lifecycle Engine** | FR-3/4/5: the ONLY writer of statuses, links, and transitions; enforces both state machines and the authority rule (I-2); executes promotion, supersession, supplements, archival, re-activation — each as one transaction (I-1). |
+| **Lifecycle Engine** | FR-3/4/5: the ONLY writer of statuses, links, and transitions; enforces both state machines and the authority rule (I-2); executes promotion, supersession, partial replacement (FR-3.1a: a link, no status change), supplements, archival, re-activation — each as one transaction (I-1). |
 | **Review Queue** | FR-4.3: pending-promote / pending-link / pending-supersede; ordering; resolutions delegate to the Lifecycle Engine. |
 | **Query Service** | FR-6: relevance (subject-or-unscoped, evidence, lexical filter, sortable, keyset-paginated), history (CTE over links + transitions), changes feed/audit, projections (full/compact), direct access, candidate enumeration, aggregates/counts (`relevant_count`, `queue_summary`, `domain_summary` — FR-6.10), **precedent search** (pgvector k-NN + attribute filters, both tiers). |
 | **Discovery Pipeline** | FR-7.2/7.4: at backfill, k-NN candidates → structural filters → `Suggester` → capped, confidence-floored queue items. |
@@ -122,9 +122,15 @@ CREATE TABLE decisions (
 CREATE TABLE links (                           -- all inter-decision relationships
   from_id UUID NOT NULL REFERENCES decisions(decision_id),
   to_id   UUID NOT NULL REFERENCES decisions(decision_id),
-  kind    TEXT NOT NULL,                       -- 'SUPERSEDES' | 'SUPPLEMENTS' | 'PROMOTED_FROM' |
-                                               -- 'CONFLICTS_WITH'
-  PRIMARY KEY (from_id, kind, to_id)
+  kind    TEXT NOT NULL,                       -- 'SUPERSEDES' | 'PARTIALLY_SUPERSEDES' |
+                                               -- 'SUPPLEMENTS' | 'PROMOTED_FROM' | 'CONFLICTS_WITH'
+  part    TEXT,                                -- added in migration 0005 (FR-3.1a, ADR 0002):
+                                               -- which ruling of `to_id` was replaced, as prose
+                                               -- for a human; nothing parses it
+  PRIMARY KEY (from_id, kind, to_id),
+  CONSTRAINT links_part_iff_partial            -- a partial replacement that names no part is
+    CHECK ((kind = 'PARTIALLY_SUPERSEDES')     -- refused by the DATABASE, not only the engine:
+           = (part IS NOT NULL))               -- the prose is the whole claim (FR-3.1a)
 );
 
 CREATE TABLE refs (
@@ -140,7 +146,8 @@ CREATE TABLE transitions (
   transition_id BIGSERIAL PRIMARY KEY,
   decision_id   UUID NOT NULL REFERENCES decisions(decision_id),
   action        TEXT NOT NULL,                 -- recorded|recommended|promoted|declined|discarded|
-                                               -- superseded|supplement_linked|archived|reactivated|
+                                               -- superseded|partial_replacement_linked|
+                                               -- supplement_linked|archived|reactivated|
                                                -- conflict_accepted|...
   actor         TEXT NOT NULL,                 -- "kind:id" (kind ∈ human|agent|engine)
   at            TIMESTAMPTZ NOT NULL DEFAULT now(),

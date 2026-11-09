@@ -64,7 +64,12 @@ declared in `application`; `domain` imports neither.
   compact columns — no fetch-then-trim).
 - **Ref/link integrity**: FK-enforced; `links` inserts validate kind against the
   closed set; supersession chains acyclic (checked in Lifecycle Engine via chain
-  walk, not a DB constraint — documented).
+  walk, not a DB constraint — documented). `links.part` is the one link payload,
+  and the one link rule enforced IN the database: `links_part_iff_partial`
+  (migration 0005) makes it non-null exactly for `PARTIALLY_SUPERSEDES` and null
+  for every other kind, because a partial replacement naming no part is the whole
+  claim missing (FR-3.1a) and no application-side guard speaks for rows written
+  by a repair script.
 
 ## Migrations layout
 
@@ -73,6 +78,7 @@ packages/binnacle-core/src/binnacle_core/migrations/
   0001_schema.sql          # + 0001_schema.rollback.sql
   0002_indexes.sql         # + rollback
   ...
+  0005_link_part.sql       # + rollback -- `links.part` + its CHECK (FR-3.1a)
 ```
 
 `Binnacle.migrate()` runs yoyo programmatically against the configured DSN/pool,

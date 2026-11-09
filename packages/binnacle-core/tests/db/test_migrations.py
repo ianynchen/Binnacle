@@ -45,6 +45,16 @@ def _index_exists(pg_dsn: str, schema: str, index_name: str) -> bool:
         return cur.fetchone() is not None
 
 
+def _column_exists(pg_dsn: str, schema: str, table: str, column: str) -> bool:
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema = %s AND table_name = %s AND column_name = %s",
+            (schema, table, column),
+        )
+        return cur.fetchone() is not None
+
+
 async def test_migrate_creates_all_tables(pg_dsn: str, scratch_schema: str) -> None:
     """migrate() creates every table named in ARCHITECTURE.md §4, in the target schema only."""
     store = PostgresStore(dsn=pg_dsn, schema_name=scratch_schema, embedding_dim=768)
@@ -78,7 +88,7 @@ async def test_apply_rollback_last_reapply(pg_dsn: str, scratch_schema: str) -> 
     only reason PostgresStore.migrate() itself needs to run first)."""
     store = PostgresStore(dsn=pg_dsn, schema_name=scratch_schema, embedding_dim=768)
     await store.migrate()
-    assert _index_exists(pg_dsn, scratch_schema, "idx_refs_evidence")
+    assert _column_exists(pg_dsn, scratch_schema, "links", "part")
 
     with tempfile.TemporaryDirectory() as tmp:
         _render_migrations(Path(tmp), scratch_schema, 768)
@@ -89,13 +99,15 @@ async def test_apply_rollback_last_reapply(pg_dsn: str, scratch_schema: str) -> 
             assert len(last_applied) == 1
 
             backend.rollback_migrations(last_applied)
-            assert not _index_exists(pg_dsn, scratch_schema, "idx_refs_evidence")
-            # 0001-0003's tables and indexes are untouched by rolling back only 0004.
+            assert not _column_exists(pg_dsn, scratch_schema, "links", "part")
+            # 0001-0004's tables, columns, and indexes are untouched by rolling
+            # back only 0005 (which adds `links.part` and its CHECK, FR-3.1a).
             assert EXPECTED_TABLES <= _tables_in(pg_dsn, scratch_schema)
             assert _index_exists(pg_dsn, scratch_schema, "idx_trans_decision")
+            assert _index_exists(pg_dsn, scratch_schema, "idx_refs_evidence")
 
             backend.apply_migrations(backend.to_apply(migrations))
-            assert _index_exists(pg_dsn, scratch_schema, "idx_refs_evidence")
+            assert _column_exists(pg_dsn, scratch_schema, "links", "part")
         finally:
             backend.connection.close()
 

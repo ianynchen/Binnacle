@@ -22,6 +22,7 @@ from binnacle_core.domain.models import (
     DomainSummary,
     ExportBundle,
     HistoryRecord,
+    Link,
     LinkKind,
     Page,
     PromotionAssessment,
@@ -186,8 +187,36 @@ class StorePort(Protocol):
         from the transition fold)."""
         ...
 
-    async def insert_link(self, tx: Tx, from_id: UUID, to_id: UUID, kind: LinkKind) -> None:
-        """Insert one `links` row. Idempotent: repeating an existing (from, kind, to) is a no-op."""
+    async def insert_link(
+        self, tx: Tx, from_id: UUID, to_id: UUID, kind: LinkKind, *, part: str | None = None
+    ) -> None:
+        """Insert one `links` row. Idempotent: repeating an existing (from, kind, to) is a no-op.
+
+        `part` is required for `kind='PARTIALLY_SUPERSEDES'` and must be omitted
+        for every other kind (FR-3.1a): the column is keyword-only and optional
+        so the four part-less kinds' call sites read exactly as before.
+
+        Raises:
+            Exception: the driver's integrity error when `part` and `kind`
+                disagree — the `links_part_iff_partial` CHECK (migration 0005)
+                is the authority on that pairing, not this signature.
+        """
+        ...
+
+    async def links_between(self, tx: Tx, a: UUID, b: UUID) -> list[Link]:
+        """Every `links` row connecting `a` and `b`, in EITHER direction, read on
+        `tx`'s own connection.
+
+        Exists so the Lifecycle Engine's replacement-consistency refusals
+        (FR-3.1b: no whole-and-partial pair, no mutual partial pair) can run
+        INSIDE the act's already-open transaction, for the same
+        pool-exhaustion reason as `predecessor_chain` and `transitions_for`:
+        borrowing a second pooled connection per call while the act's own
+        transaction already holds one exhausts a small pool (`PoolTimeout`)
+        well before any row lock would contend. Returns both directions in one
+        read because both refusals are about the unordered pair — the caller
+        filters on `from_id` to tell "B replaces part of A" from the reverse.
+        """
         ...
 
     async def insert_refs(self, tx: Tx, decision_id: UUID, refs: Sequence[Ref]) -> None:
@@ -448,9 +477,11 @@ class StorePort(Protocol):
 
     async def history(self, decision_id: UUID) -> HistoryRecord:
         """FR-6.2: the decision's full record — content, refs, transitions (in
-        order), every link touching it, both supersession chains (recursive over
-        `links` kind SUPERSEDES), and its supplements. Includes archived/discarded
-        decisions throughout (history hides nothing).
+        order), every link touching it (each `PARTIALLY_SUPERSEDES` one carrying
+        its `part`), both supersession chains (recursive over `links` kind
+        SUPERSEDES — whole replacement only), its supplements, and its partial
+        replacers paired with the part each replaced (FR-3.1c). Includes
+        archived/discarded decisions throughout (history hides nothing).
 
         Raises:
             DecisionNotFound: no decision has `decision_id`.

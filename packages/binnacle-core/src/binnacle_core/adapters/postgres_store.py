@@ -69,6 +69,7 @@ from binnacle_core.domain.models import (
     LinkKind,
     OptionConsidered,
     Page,
+    PartialReplacement,
     QueueItem,
     QueueItemView,
     QueueKind,
@@ -188,6 +189,13 @@ def _row_to_transition(row: dict[str, Any]) -> Transition:
         new_status=row["new_status"],
         payload=row["payload"],
     )
+
+
+def _row_to_link(row: dict[str, Any]) -> Link:
+    """A `links` row as a `Link`, `part` included — the one projection every
+    link read goes through, so no read can drop the `part` that distinguishes a
+    partial replacement from a whole one (FR-3.1c)."""
+    return Link(from_id=row["from_id"], to_id=row["to_id"], kind=row["kind"], part=row["part"])
 
 
 def _row_to_decision(
@@ -496,13 +504,24 @@ class PostgresStore:
                 (new_status, decision_id),
             )
 
-    async def insert_link(self, tx: Tx, from_id: UUID, to_id: UUID, kind: LinkKind) -> None:
+    async def insert_link(
+        self, tx: Tx, from_id: UUID, to_id: UUID, kind: LinkKind, *, part: str | None = None
+    ) -> None:
         conn = self._conn(tx)
         await conn.execute(
-            f"INSERT INTO {self._schema}.links (from_id, to_id, kind) VALUES (%s, %s, %s) "
-            "ON CONFLICT (from_id, kind, to_id) DO NOTHING",
-            (from_id, to_id, kind),
+            f"INSERT INTO {self._schema}.links (from_id, to_id, kind, part) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (from_id, kind, to_id) DO NOTHING",
+            (from_id, to_id, kind, part),
         )
+
+    async def links_between(self, tx: Tx, a: UUID, b: UUID) -> list[Link]:
+        conn = self._conn(tx)
+        cur = await conn.execute(
+            f"SELECT from_id, to_id, kind, part FROM {self._schema}.links "
+            "WHERE (from_id = %(a)s AND to_id = %(b)s) OR (from_id = %(b)s AND to_id = %(a)s)",
+            {"a": a, "b": b},
+        )
+        return [_row_to_link(row) async for row in cur]
 
     async def insert_refs(self, tx: Tx, decision_id: UUID, refs: Sequence[Ref]) -> None:
         if not refs:
@@ -1092,12 +1111,11 @@ class PostgresStore:
             transitions = [_row_to_transition(r) async for r in cur]
 
             cur = await conn.execute(
-                f"SELECT from_id, to_id, kind FROM {schema}.links WHERE from_id = %s OR to_id = %s",
+                f"SELECT from_id, to_id, kind, part FROM {schema}.links "
+                "WHERE from_id = %s OR to_id = %s",
                 (decision_id, decision_id),
             )
-            links = [
-                Link(from_id=r["from_id"], to_id=r["to_id"], kind=r["kind"]) async for r in cur
-            ]
+            links = [_row_to_link(r) async for r in cur]
 
             cur = await conn.execute(
                 f"WITH RECURSIVE pred AS ("
@@ -1133,6 +1151,17 @@ class PostgresStore:
             )
             supplement_ids = [r["from_id"] async for r in cur]
 
+            # FR-3.1c: partial replacers are read as their OWN relation, never
+            # folded into the successor chain above -- a decision whose part was
+            # replaced is still the authority for the rest, so calling its
+            # partial replacer a successor would report it as dead (FR-3.1a).
+            cur = await conn.execute(
+                f"SELECT from_id, part FROM {schema}.links "
+                "WHERE to_id = %s AND kind = 'PARTIALLY_SUPERSEDES'",
+                (decision_id,),
+            )
+            partial_rows = [(r["from_id"], r["part"]) async for r in cur]
+
             # CONFLICTS_WITH is symmetric (unlike SUPERSEDES/SUPPLEMENTS, which
             # are directional) -- `resolve_conflict`'s accept path inserts it
             # `(from=item.decision_id, to=item.target_id)`, but either side
@@ -1149,6 +1178,15 @@ class PostgresStore:
             successors = await self._decisions_by_id_ordered(conn, successor_ids)
             supplements = await self._decisions_by_id_ordered(conn, supplement_ids)
             conflicts = await self._decisions_by_id_ordered(conn, conflict_ids)
+            # `partial_rows` and this hydration stay index-aligned: the FK on
+            # `links.from_id` means no id here can be missing a `decisions` row
+            # (the one case `_decisions_by_id_ordered` would drop), and the
+            # `links` PK makes a repeated (from_id, kind, to_id) impossible.
+            replacers = await self._decisions_by_id_ordered(conn, [r[0] for r in partial_rows])
+            partial_replacers = [
+                PartialReplacement(decision=replacer, part=part)
+                for replacer, (_, part) in zip(replacers, partial_rows, strict=True)
+            ]
 
         return HistoryRecord(
             decision=decision,
@@ -1157,6 +1195,7 @@ class PostgresStore:
             predecessors=predecessors,
             successors=successors,
             supplements=supplements,
+            partial_replacers=partial_replacers,
             conflicts=conflicts,
         )
 
@@ -1532,13 +1571,11 @@ class PostgresStore:
             links: list[Link] = []
             if ids:
                 cur = await conn.execute(
-                    f"SELECT from_id, to_id, kind FROM {schema}.links "
+                    f"SELECT from_id, to_id, kind, part FROM {schema}.links "
                     "WHERE from_id = ANY(%s) OR to_id = ANY(%s)",
                     (ids, ids),
                 )
-                links = [
-                    Link(from_id=r["from_id"], to_id=r["to_id"], kind=r["kind"]) async for r in cur
-                ]
+                links = [_row_to_link(r) async for r in cur]
 
             transitions: list[Transition] = []
             if ids:

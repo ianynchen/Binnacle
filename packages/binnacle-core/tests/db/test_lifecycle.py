@@ -10,7 +10,10 @@ Layout:
   per act, each parametrize table mirroring 03's rows.
 - test_property_random_walk: a random legal walk over >=30 decisions, >=200
   acts, asserting the I-1 fold invariant and content immutability hold for
-  every decision afterward.
+  every decision afterward. Status-neutral acts (`supplement`,
+  `partially_supersede`) are in the walk precisely because they must NOT move
+  a status: the driver never updates its tracked status for them, so the final
+  I-1 check fails if either ever starts contributing to the fold.
 - TestTargeted: refined multi-source consolidation, pending-LT-claim execution,
   cross-tier supersede refusal, cycle refusal, the promote-vs-supersede race,
   and recommend-on-archived's implicit reactivation.
@@ -665,6 +668,375 @@ class TestMatrixSupersede:
         await engine.supersede(new.decision_id, old.decision_id, RECORDER)
         with pytest.raises(ItemAlreadyResolved):
             await engine.decline(item_id, HUMAN, "too late")
+
+
+# ===========================================================================
+# partially_supersede — no status change; three refusals (FR-3.1a/3.1b)
+# ===========================================================================
+
+
+class TestMatrixPartiallySupersede:
+    """FR-3.1a/ADR 0002: `PARTIALLY_SUPERSEDES` records that a later decision
+    replaced SOME of a decision's rulings and left the rest in force. Shaped on
+    `supplement` (a link that changes no status), not on `supersede`: authority
+    is the human gate only when the target is long-term, and no tier symmetry is
+    required, because FR-5.2a governs whole replacement only — only whole
+    replacement ends a decision's force.
+    """
+
+    @pytest.mark.parametrize("actor", [HUMAN, RECORDER, ENGINE_ACTOR])
+    @pytest.mark.parametrize("from_status", ["current", "not_promoted", "superseded", "archived"])
+    async def test_target_keeps_exactly_the_status_it_had(
+        self,
+        engine: LifecycleEngine,
+        store: PostgresStore,
+        actor: Actor,
+        from_status: str,
+    ) -> None:
+        """The whole point of the relation (FR-3.1a): the target remains the
+        authority for every ruling the replacer did not touch, so its status
+        must not move — from ANY status it was already in, including
+        `superseded` (FR-3.1b permits partially replacing a dead decision; FR-5.3
+        says whether that is worth recording is not Binnacle's judgment)."""
+        old = await reach(engine, store, "short_term", from_status)
+        new = await engine.record(_nd(scenario="replaces one ruling"), RECORDER)
+        await engine.partially_supersede(
+            new.decision_id, old.decision_id, "the retry-count ruling", actor
+        )
+        assert await _status(store, old.decision_id) == from_status
+        assert await _status(store, new.decision_id) == "current"
+
+    async def test_status_fold_ignores_partial_replacement_linked(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """I-1 + FR-3.1a: `status` is the fold of the transition log — the last
+        non-null `new_status`. `partial_replacement_linked` must therefore write
+        `new_status=None` on BOTH sides; the moment it carries one, it starts
+        contributing to the fold and a partially-replaced decision silently
+        changes status. Asserted at the transition level (not just by comparing
+        statuses) so the test fails on the cause, not only on one visible
+        symptom of it."""
+        old = await reach(engine, store, "short_term", "not_promoted")
+        new = await engine.record(_nd(scenario="replaces one ruling"), RECORDER)
+        await engine.partially_supersede(
+            new.decision_id, old.decision_id, "the backoff ruling", RECORDER
+        )
+
+        for decision_id, expected in (
+            (old.decision_id, "not_promoted"),
+            (new.decision_id, "current"),
+        ):
+            hist = await store.history(decision_id)
+            linked = [t for t in hist.transitions if t.action == "partial_replacement_linked"]
+            assert len(linked) == 1
+            assert linked[0].new_status is None, (
+                "partial_replacement_linked must contribute nothing to the status fold"
+            )
+            assert _fold(hist.transitions) == expected
+            assert hist.decision.status == expected
+
+    async def test_writes_the_link_with_its_part_and_both_transitions(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="replaces one ruling"), RECORDER)
+        await engine.partially_supersede(
+            new.decision_id, old.decision_id, "DEC-0001's projection ruling", RECORDER
+        )
+        old_hist = await store.history(old.decision_id)
+        new_hist = await store.history(new.decision_id)
+        assert "partial_replacement_linked" in [t.action for t in old_hist.transitions]
+        assert "partial_replacement_linked" in [t.action for t in new_hist.transitions]
+        assert [
+            (link.from_id, link.to_id, link.part)
+            for link in old_hist.links
+            if link.kind == "PARTIALLY_SUPERSEDES"
+        ] == [(new.decision_id, old.decision_id, "DEC-0001's projection ruling")]
+
+    async def test_no_tier_symmetry_short_term_may_partially_replace_long_term(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """FR-3.1a: FR-5.2a's "durable policy is never succeeded by working-tier
+        records" is about whole replacement, which ENDS a decision's force. A
+        short-term decision naming one long-term ruling it departed from ends
+        nothing, so the cross-tier refusal `supersede` applies here does not."""
+        old = await reach(engine, store, "long_term", "current")
+        new = await engine.record(_nd(scenario="working-tier departure"), RECORDER)
+        await engine.partially_supersede(
+            new.decision_id, old.decision_id, "the timeout ruling", HUMAN
+        )
+        assert await _status(store, old.decision_id) == "current"
+
+    @pytest.mark.parametrize("actor", [RECORDER, ENGINE_ACTOR])
+    async def test_long_term_target_non_human_refused(
+        self, engine: LifecycleEngine, store: PostgresStore, actor: Actor
+    ) -> None:
+        """Authority follows `supplement` (I-2): mutating a long-term decision's
+        relationships at all goes through the human gate (FR-5.2)."""
+        old = await reach(engine, store, "long_term", "current")
+        new = await engine.record_long_term(_nd(scenario="partial replacer"), HUMAN)
+        with pytest.raises(AuthorityViolation):
+            await engine.partially_supersede(new.decision_id, old.decision_id, "one ruling", actor)
+
+    async def test_missing_decision_refused(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        from uuid import uuid4
+
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        with pytest.raises(DecisionNotFound):
+            await engine.partially_supersede(new.decision_id, uuid4(), "one ruling", RECORDER)
+        old = await reach(engine, store, "short_term", "current")
+        with pytest.raises(DecisionNotFound):
+            await engine.partially_supersede(uuid4(), old.decision_id, "one ruling", RECORDER)
+
+    async def test_does_not_void_the_targets_open_items(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """FR-4.3 voids open items when a decision leaves `current` OUTSIDE the
+        gate. A partial replacement leaves it exactly where it was, so its
+        pending promotion is still live — voiding it would discard human
+        attention the decision is still eligible for."""
+        old = await reach(engine, store, "short_term", "current")
+        item_id = await engine.recommend(old.decision_id, RECORDER, "promote me")
+        assert item_id is not None
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        await engine.partially_supersede(new.decision_id, old.decision_id, "one ruling", RECORDER)
+        await engine.decline(item_id, HUMAN, "still resolvable")
+        assert await _status(store, old.decision_id) == "not_promoted"
+
+
+class TestPartialReplacementRefusals:
+    """FR-3.1b: three refusals, and only three. Each rejects a statement that
+    CANNOT BE TRUE — not one Binnacle merely dislikes — so each test names the
+    impossibility rather than the rule."""
+
+    async def test_self_replacement_refused(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """To replace a ruling is for a LATER decision to take a different
+        position on the question that ruling answered. A decision has no earlier
+        ruling of its own to have replaced."""
+        d = await reach(engine, store, "short_term", "current")
+        with pytest.raises(InvalidTransition):
+            await engine.partially_supersede(
+                d.decision_id, d.decision_id, "its own ruling", RECORDER
+            )
+        hist = await store.history(d.decision_id)
+        assert hist.links == []
+
+    async def test_partial_refused_when_whole_already_recorded(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """B wholly replaces A, so no ruling of A is in force: there is nothing
+        left for B to replace only SOME of."""
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="whole replacer"), RECORDER)
+        await engine.supersede(new.decision_id, old.decision_id, RECORDER)
+        with pytest.raises(InvalidTransition):
+            await engine.partially_supersede(
+                new.decision_id, old.decision_id, "one ruling", RECORDER
+            )
+
+    async def test_whole_refused_when_partial_already_recorded(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """The SAME falsehood recorded in the other order (FR-3.1b: "refused in
+        either order of recording"). B has already left some of A's rulings in
+        force; it cannot also have replaced all of them. Without this direction
+        the refusal is merely a race the caller can win by reordering two
+        calls."""
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        await engine.partially_supersede(new.decision_id, old.decision_id, "one ruling", RECORDER)
+        with pytest.raises(InvalidTransition):
+            await engine.supersede(new.decision_id, old.decision_id, RECORDER)
+        assert await _status(store, old.decision_id) == "current"
+
+    async def test_whole_refused_when_partial_already_recorded_via_apply_item(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Same refusal through the queue door: a discovery-suggested supersede
+        executed by a human is the same claim as a direct `supersede()` call, so
+        it cannot be the way the forbidden pair gets written."""
+        old = await reach(engine, store, "long_term", "current")
+        new = await engine.record_long_term(_nd(scenario="partial replacer"), HUMAN)
+        await engine.partially_supersede(new.decision_id, old.decision_id, "one ruling", HUMAN)
+        async with store.transaction() as tx:
+            item_id = await store.enqueue(
+                tx, "supersede", new.decision_id, old.decision_id, HUMAN, "suggested", 0.9
+            )
+        assert item_id is not None
+        with pytest.raises(InvalidTransition):
+            await engine.apply_item(item_id, HUMAN)
+        assert await _status(store, old.decision_id) == "current"
+
+    async def test_mutual_partial_pair_refused(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """Replacement needs a ruling that WAS IN FORCE and a later decision
+        taking a different position on it. In a reciprocal pair neither decision
+        was ever in force before the other, so the relation is undefined rather
+        than rare.
+
+        No date appears anywhere in this test, deliberately (FR-3.1b): the
+        reciprocal shape is itself the falsehood. A pair whose `decided_at`
+        values differ is refused for exactly the same reason as one recorded in
+        the same breath — gating on dates would reinstate the hole for every
+        pair recorded out of order, and `decided_at` is caller-supplied
+        (FR-1.7) anyway."""
+        a = await engine.record(_nd(scenario="decision A"), RECORDER)
+        b = await engine.record(_nd(scenario="decision B"), RECORDER)
+        await engine.partially_supersede(
+            a.decision_id, b.decision_id, "B's logging ruling", RECORDER
+        )
+        with pytest.raises(InvalidTransition):
+            await engine.partially_supersede(
+                b.decision_id, a.decision_id, "A's retry ruling", RECORDER
+            )
+        hist = await store.history(a.decision_id)
+        assert [link.kind for link in hist.links] == ["PARTIALLY_SUPERSEDES"]
+
+    async def test_distinct_parts_of_the_same_target_are_permitted(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """The near miss: three refusals and ONLY three (FR-3.1b). Several later
+        decisions each replacing a different ruling of one earlier decision is
+        the ordinary case the feature exists for — all seven replacement
+        relationships among the fleet's own records are of this shape — so
+        nothing here may be refused."""
+        old = await reach(engine, store, "short_term", "current")
+        first = await engine.record(_nd(scenario="replaces the projection ruling"), RECORDER)
+        second = await engine.record(_nd(scenario="replaces the retry ruling"), RECORDER)
+        await engine.partially_supersede(
+            first.decision_id, old.decision_id, "the projection ruling", RECORDER
+        )
+        await engine.partially_supersede(
+            second.decision_id, old.decision_id, "the retry ruling", RECORDER
+        )
+        assert await _status(store, old.decision_id) == "current"
+        hist = await store.history(old.decision_id)
+        assert {p.part for p in hist.partial_replacers} == {
+            "the projection ruling",
+            "the retry ruling",
+        }
+
+    async def test_partial_replacement_in_both_directions_between_different_pairs(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """The other near miss: the mutual-pair refusal is about ONE pair, not
+        about a decision being on both sides of the relation. A decision that
+        replaced part of an older one may itself have part of it replaced
+        later — that is just a chain."""
+        oldest = await engine.record(_nd(scenario="decision A"), RECORDER)
+        middle = await engine.record(_nd(scenario="decision B"), RECORDER)
+        newest = await engine.record(_nd(scenario="decision C"), RECORDER)
+        await engine.partially_supersede(
+            middle.decision_id, oldest.decision_id, "A's first ruling", RECORDER
+        )
+        await engine.partially_supersede(
+            newest.decision_id, middle.decision_id, "B's first ruling", RECORDER
+        )
+        assert await _status(store, middle.decision_id) == "current"
+
+
+class TestPartialReplacementReads:
+    """FR-3.1c: a caller must be able to ask "is anything here still in force?"
+    and get a true answer, so no read may collapse whole and partial replacement
+    into one notion of replacement."""
+
+    async def test_history_surfaces_partial_replacers_with_their_part(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="replaces one ruling"), RECORDER)
+        await engine.partially_supersede(
+            new.decision_id, old.decision_id, "the projection ruling", RECORDER
+        )
+        hist = await store.history(old.decision_id)
+        assert [(p.decision.decision_id, p.part) for p in hist.partial_replacers] == [
+            (new.decision_id, "the projection ruling")
+        ]
+
+    async def test_history_never_reports_a_partial_replacer_as_a_successor(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """The defect this feature exists to remove: a partial replacer in the
+        successor chain reads as "this decision has fallen", which is false
+        while it is still the authority for every ruling untouched. The
+        supersession chains are whole replacement ONLY (FR-3.1a)."""
+        old = await reach(engine, store, "short_term", "current")
+        partial = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        await engine.partially_supersede(
+            partial.decision_id, old.decision_id, "one ruling", RECORDER
+        )
+        hist = await store.history(old.decision_id)
+        assert hist.successors == []
+        assert hist.supplements == []
+        assert hist.conflicts == []
+        assert [p.decision.decision_id for p in hist.partial_replacers] == [partial.decision_id]
+        partial_hist = await store.history(partial.decision_id)
+        assert partial_hist.predecessors == []
+
+    async def test_declared_supersedes_projection_excludes_partial_replacement(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """`Decision.supersedes` (FR-6.8, fed by `get_decision`/`get_many`) is
+        whole replacement. Folding a partial link into it would tell every
+        caller of those reads that the target is finished."""
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        await engine.partially_supersede(new.decision_id, old.decision_id, "one ruling", RECORDER)
+        fetched = (await store.get_many([new.decision_id]))[0]
+        assert fetched.supersedes == []
+        assert fetched.supplements == []
+
+    async def test_partially_replaced_decision_stays_in_current_status_reads(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """FR-3.1a's consequence for FR-6.1: recording this as `supersede` would
+        drop the decision out of every current-status query while the ruling it
+        is most cited for still stands."""
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        await engine.partially_supersede(new.decision_id, old.decision_id, "one ruling", RECORDER)
+        page = await store.relevant(domains=["eng"], limit=100)
+        assert old.decision_id in [item.id for item in page.items]
+
+    async def test_export_carries_the_part(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """FR-6.6 exports every link touching the selected decisions. A
+        partial link exported without its `part` would be indistinguishable
+        from one whose part was never recorded — which the schema forbids —
+        so the export would not round-trip."""
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        await engine.partially_supersede(
+            new.decision_id, old.decision_id, "the projection ruling", RECORDER
+        )
+        bundle = await store.export_rows(domains=["eng"])
+        partial = [link for link in bundle.links if link.kind == "PARTIALLY_SUPERSEDES"]
+        assert [(link.from_id, link.to_id, link.part) for link in partial] == [
+            (new.decision_id, old.decision_id, "the projection ruling")
+        ]
+        assert all(
+            link.part is None for link in bundle.links if link.kind != "PARTIALLY_SUPERSEDES"
+        )
+
+    async def test_changes_feed_names_the_action_distinctly(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """FR-6.5's feed distinguishes the two relations by action name alone —
+        `partial_replacement_linked` is never `superseded` — which is what keeps
+        an audit reader from reading one as the other."""
+        old = await reach(engine, store, "short_term", "current")
+        new = await engine.record(_nd(scenario="partial replacer"), RECORDER)
+        await engine.partially_supersede(new.decision_id, old.decision_id, "one ruling", RECORDER)
+        rows = await store.changes(actions=["superseded"])
+        assert rows == []
+        rows = await store.changes(actions=["partial_replacement_linked"])
+        assert {r[0].decision_id for r in rows} == {old.decision_id, new.decision_id}
 
 
 # ===========================================================================
@@ -1451,6 +1823,16 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
         actor = HUMAN if old.tier == "long_term" else rng.choice([HUMAN, RECORDER, ENGINE_ACTOR])
         await engine.supplement(new.decision_id, old.decision_id, actor)
 
+    async def do_partially_supersede(old: _Tracked, new: _Tracked) -> None:
+        actor = HUMAN if old.tier == "long_term" else rng.choice([HUMAN, RECORDER, ENGINE_ACTOR])
+        await engine.partially_supersede(
+            new.decision_id, old.decision_id, f"ruling of walk-{old.seq}", actor
+        )
+        # Tracked status deliberately NOT touched: FR-3.1a says this act moves
+        # no status, so the final I-1 check below is what proves it -- if
+        # `partial_replacement_linked` ever started contributing to the fold,
+        # every decision this act touched would diverge from the driver.
+
     async def do_archive(d: _Tracked) -> None:
         actor = rng.choice([HUMAN, ENGINE_ACTOR])
         await engine.archive([d.decision_id], actor)
@@ -1566,6 +1948,24 @@ async def test_property_random_walk(engine: LifecycleEngine, store: PostgresStor
             for _ in range(min(5, len(pool))):
                 old, new = rng.sample(pool, 2)
                 candidates.append((lambda old=old, new=new: do_supplement(old, new)))
+
+        # partially_supersede changes no status either (FR-3.1a), but unlike
+        # supplement it has refusals (FR-3.1b), so the driver must only ever
+        # offer pairs that cannot hit one. `promoted`/`discarded` targets give
+        # that by construction: both are terminal, so no SUPERSEDES edge can
+        # point at them now (every act that writes one requires a
+        # current/not_promoted target) or ever later -- which rules out the
+        # whole-and-partial refusal in both orders of recording, including via
+        # a later `do_supersede`/`do_resolve_conflict` choosing the same pair.
+        # Taking `new` strictly newer by seq rules out the other two: a
+        # decision is never its own partial replacer, and every partial edge
+        # pointing newer -> older makes a reciprocal pair unreachable.
+        partial_targets = [d for d in pool if d.status in ("promoted", "discarded")]
+        for old in partial_targets:
+            newer = [n for n in pool if n.seq > old.seq]
+            if newer:
+                new = rng.choice(newer)
+                candidates.append((lambda old=old, new=new: do_partially_supersede(old, new)))
 
         eligible_sources = [
             d
@@ -1764,6 +2164,80 @@ class TestTargeted:
 
         for d in decisions:
             assert await _status(store, d.decision_id) == "current"
+
+    async def test_concurrent_partial_replacements_on_overlapping_pairs(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """`partially_supersede`'s FR-3.1b refusals read existing links, and that
+        read must run on the act's OWN transaction connection: `PostgresStore`'s
+        pool is `max_size=4`, so N >= pool-size concurrent calls that each
+        borrowed a second pooled connection mid-transaction would all block
+        forever waiting for one (`PoolTimeout`, or a hang this `wait_for`
+        surfaces as a timeout) — the same failure this repo already hit with
+        `_check_acyclic` and `_restored_status`.
+
+        The pairs OVERLAP on purpose (every call targets the same decision), so
+        this exercises row-lock contention and pool pressure together: all six
+        calls serialize on the target's lock, and none of them is refused (six
+        decisions each replacing a different ruling of one earlier decision is
+        the ordinary case, FR-3.1b). Final state must be consistent: the target
+        keeps its status, its status still equals the fold of its log (I-1), and
+        every replacement landed exactly once."""
+        old = await reach(engine, store, "short_term", "current")
+        replacers = [
+            await engine.record(_nd(scenario=f"replaces ruling {i}"), RECORDER) for i in range(6)
+        ]
+
+        async def replace_part(index: int, replacer: Decision) -> None:
+            await engine.partially_supersede(
+                replacer.decision_id, old.decision_id, f"ruling {index}", RECORDER
+            )
+
+        await asyncio.wait_for(
+            asyncio.gather(*(replace_part(i, r) for i, r in enumerate(replacers))),
+            timeout=10,
+        )
+
+        hist = await store.history(old.decision_id)
+        assert hist.decision.status == "current"
+        assert _fold(hist.transitions) == hist.decision.status
+        assert {p.decision.decision_id for p in hist.partial_replacers} == {
+            r.decision_id for r in replacers
+        }
+        assert {p.part for p in hist.partial_replacers} == {f"ruling {i}" for i in range(6)}
+
+    async def test_reciprocal_partial_replacement_race_leaves_one_direction(
+        self, engine: LifecycleEngine, store: PostgresStore
+    ) -> None:
+        """The mutual-pair refusal (FR-3.1b) under concurrency: two opposite
+        `partially_supersede` calls on the same pair, issued at once. I-1's
+        row-lock serialization means they cannot both read "no reciprocal link
+        exists" and both write one — exactly one commits, the other is refused,
+        and the stored pair is never reciprocal (which is the state the refusal
+        exists to keep out of the store, not merely the call it rejects)."""
+        a = await engine.record(_nd(scenario="decision A"), RECORDER)
+        b = await engine.record(_nd(scenario="decision B"), RECORDER)
+
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                engine.partially_supersede(a.decision_id, b.decision_id, "B's ruling", RECORDER),
+                engine.partially_supersede(b.decision_id, a.decision_id, "A's ruling", RECORDER),
+                return_exceptions=True,
+            ),
+            timeout=10,
+        )
+
+        outcomes = [r for r in results if not isinstance(r, BaseException)]
+        errors = [r for r in results if isinstance(r, BaseException)]
+        assert len(outcomes) == 1, f"expected exactly one success, got {results!r}"
+        assert isinstance(errors[0], InvalidTransition), (
+            f"expected InvalidTransition for the loser, got {errors[0]!r}"
+        )
+        hist = await store.history(a.decision_id)
+        partial = [link for link in hist.links if link.kind == "PARTIALLY_SUPERSEDES"]
+        assert len(partial) == 1, f"the stored pair is reciprocal: {partial!r}"
+        assert await _status(store, a.decision_id) == "current"
+        assert await _status(store, b.decision_id) == "current"
 
     async def test_promote_vs_supersede_race(
         self, engine: LifecycleEngine, store: PostgresStore
