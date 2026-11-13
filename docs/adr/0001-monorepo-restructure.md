@@ -41,6 +41,22 @@ package. Quality gates split across `pre-commit` (fast: gitleaks, Ruff,
 Biome) and `pre-push` (full: the same `scripts/check.sh` CI runs), so
 what's pushed is guaranteed to be what CI checks.
 
+## Reasoning
+
+- **Why a monorepo.** Binnacle was a single Python package, and two more
+  pieces were wanted beside it: a library exposing its functionality as
+  REST + MCP, and a set of JS UI components usable by any consumer that
+  embeds binnacle. The monorepo holds all three as packages.
+- **Why `binnacle-service` is not built.** It would conflict with
+  `binnacle-core`'s FR-8.1 ("library, not authority — no daemon") for a
+  standalone-use-case that doesn't yet concretely exist.
+- **Why the quality gates are split.** `pre-push` runs the same
+  `scripts/check.sh` CI runs, so what's pushed is guaranteed to be what CI
+  checks.
+
+The full design rationale and the rejected alternatives are in
+`docs/superpowers/specs/2026-09-04-monorepo-restructure-design.md`.
+
 ## Consequences
 
 - **Breaking change**: `import binnacle` no longer works; callers must
