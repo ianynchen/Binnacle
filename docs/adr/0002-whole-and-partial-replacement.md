@@ -85,6 +85,24 @@ system **cannot tell** whether it was the one relied upon. That is a question fo
 a human, and a consumer surfacing it must say so rather than implying the
 citation is broken.
 
+## Reasoning
+
+- **One relation could not record the fleet's own decisions truthfully.**
+  Every supersession relationship between the fleet's 17 decision records is
+  partial, and none is whole. Recording any of them as `supersede` asserts
+  something false: that the whole decision has fallen.
+- **The falsehood has a cost in queries.** Meridian `DEC-0001` would be marked
+  dead while the framing it is most cited for explicitly stands, and every
+  query for decisions touching `component:binnacle` would then exclude it.
+- **A partially replaced decision stays `current` because it is still an
+  authority.** It remains the authority for its untouched rulings; marking it
+  `superseded` would both state a falsehood and remove it from every
+  current-status query.
+- **The kind of replacement is a claim, not something computed.** Neither
+  Binnacle nor a lint can read rulings, so neither can decide which kind of
+  replacement a link is. The claim belongs to the decision doing the
+  replacing.
+
 ## Status of the implementation
 
 **Shipped in binnacle-core** (FR-3.1a/3.1b/3.1c; see that package's
